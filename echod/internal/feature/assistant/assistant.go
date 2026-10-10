@@ -272,7 +272,8 @@ func buildGuidance() string {
 		"Music in this house is played, stopped and turned up or down through its scripts, which know about its speakers: " +
 		"use them for any music request, and never the device's own play_music, play_radio, stop or set_volume tools for " +
 		"that. To stop music use home_stop_music, which stops every player unless one is named. The music scripts know only the Dot and the home " +
-		"theater: to play on any other player, such as a computer, use home_play_music."
+		"theater: to play on any other player, such as a computer, use home_play_music. To move playing music to " +
+		"another player, or bring it to this device, use home_move_music."
 	if c := scriptCatalog(); c != "" {
 		s += "\n\n" + c
 	}

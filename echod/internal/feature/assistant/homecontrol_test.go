@@ -210,3 +210,43 @@ func TestStopMusicStopsEverythingPlaying(t *testing.T) {
 		t.Errorf("idle house: %q %v", out, stopped)
 	}
 }
+
+func TestMoveMusic(t *testing.T) {
+	list := []hass.Exposed{
+		{ID: "media_player.dot", Domain: "media_player", Name: "Dot", State: "idle"},
+		{ID: "media_player.pop_os", Domain: "media_player", Name: "Pop!_OS", State: "playing"},
+		{ID: "media_player.home_theater", Domain: "media_player", Name: "Home Theater", State: "off"},
+	}
+	var calls []call
+	rec := func(d, s string, data map[string]any) error { calls = append(calls, call{d, s, data}); return nil }
+
+	// "Bring it here": no destination, the device that heard is the Dot.
+	out, err := moveMusic(list, "", "", "Dot", rec)
+	if err != nil || len(calls) != 1 || calls[0].service != "transfer_queue" ||
+		calls[0].data["entity_id"] != "media_player.dot" || calls[0].data["source_player"] != "media_player.pop_os" ||
+		!strings.Contains(out, "from Pop!_OS to Dot") {
+		t.Fatalf("out=%q err=%v calls=%+v", out, err, calls)
+	}
+
+	// To a named player.
+	calls = nil
+	if _, err := moveMusic(list, "home theater", "", "Dot", rec); err != nil || calls[0].data["entity_id"] != "media_player.home_theater" {
+		t.Errorf("%v %+v", err, calls)
+	}
+
+	// Already there, and nothing playing.
+	if _, err := moveMusic(list, "desk pc", "desk pc", "Dot", rec); err == nil {
+		t.Error("moved music onto itself")
+	}
+	idle := []hass.Exposed{list[0], list[2]}
+	if _, err := moveMusic(idle, "home theater", "", "Dot", rec); err == nil {
+		t.Error("moved music that was not playing")
+	}
+
+	// Two playing: it asks.
+	two := append(list[:2:2], hass.Exposed{ID: "media_player.home_theater", Domain: "media_player", Name: "Home Theater", State: "playing"})
+	two[0].State = "idle"
+	if _, err := moveMusic(two, "dot", "", "Dot", rec); err == nil || !strings.Contains(err.Error(), "several players") && !strings.Contains(err.Error(), "several") {
+		t.Errorf("two sources: %v", err)
+	}
+}

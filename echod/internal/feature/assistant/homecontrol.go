@@ -91,6 +91,24 @@ func homeTools() []tool {
 				return playOnPlayer(list, argString(a, "name"), argString(a, "kind"), player, shuffle, hass.Get().Service)
 			}},
 
+		{llm.Tool{Name: "home_move_music", Description: "Move the music that is playing to another speaker or computer, " +
+			"carrying on where it was: 'move the music to the home theater', 'bring it here', 'send this to the PC'. " +
+			"to is words from the player's name; leave it out to bring the music to the device being talked to. " +
+			"from is the player it is on, only needed when more than one is playing.",
+			Parameters: object(map[string]any{
+				"to":   str("Words from the name of the player to move the music to; empty for this device."),
+				"from": str("Words from the name of the player it is playing on; empty for whichever is playing."),
+			})},
+			func(a map[string]any) (string, error) {
+				ctx, cancel := context.WithTimeout(context.Background(), scriptTimeout)
+				defer cancel()
+				list, err := hass.Get().ExposedEntities(ctx)
+				if err != nil {
+					return "", err
+				}
+				return moveMusic(list, argString(a, "to"), argString(a, "from"), config.Get().Device.Name, hass.Get().Service)
+			}},
+
 		{llm.Tool{Name: "home_stop_music", Description: "Stop music. With no player named it stops every speaker and computer " +
 			"that is playing or paused, wherever it is: use that for 'stop the music', 'stop all music' and 'be quiet'. " +
 			"Name a player only when the person names one.",
@@ -619,4 +637,60 @@ func stopMusic(list []hass.Exposed, player string, call func(domain, service str
 		out += ". Could not stop: " + strings.Join(failed, "; ")
 	}
 	return out, nil
+}
+
+// moveMusic carries the queue and its place to another player through Music Assistant. here is the
+// player of the device that heard the request, for "bring it here".
+func moveMusic(list []hass.Exposed, to, from, here string,
+	call func(domain, service string, data map[string]any) error) (string, error) {
+	var players []hass.Exposed
+	for _, e := range list {
+		if e.Domain == "media_player" {
+			players = append(players, e)
+		}
+	}
+	if strings.TrimSpace(to) == "" {
+		to = here
+	}
+	dest := match(players, to)
+	switch {
+	case len(dest) == 0:
+		return "", fmt.Errorf("no media player matches %q", to)
+	case len(dest) > 1:
+		var names []string
+		for _, e := range dest {
+			names = append(names, e.Name)
+		}
+		return "", fmt.Errorf("several players match: %s. Ask which", strings.Join(names, "; "))
+	}
+
+	var src []hass.Exposed
+	if strings.TrimSpace(from) != "" {
+		src = match(players, from)
+	} else {
+		for _, e := range players {
+			if e.ID != dest[0].ID && (e.State == "playing" || e.State == "paused" || e.State == "buffering") {
+				src = append(src, e)
+			}
+		}
+	}
+	switch {
+	case len(src) == 0:
+		return "", errors.New("nothing is playing to move")
+	case len(src) > 1:
+		var names []string
+		for _, e := range src {
+			names = append(names, e.Name)
+		}
+		return "", fmt.Errorf("music is playing on several players: %s. Ask which to move", strings.Join(names, "; "))
+	case src[0].ID == dest[0].ID:
+		return "", fmt.Errorf("the music is already on %s", dest[0].Name)
+	}
+
+	if err := call("music_assistant", "transfer_queue", map[string]any{
+		"entity_id": dest[0].ID, "source_player": src[0].ID, "auto_play": true}); err != nil {
+		return "", fmt.Errorf("%s to %s: %w", src[0].Name, dest[0].Name, err)
+	}
+	hass.ForgetExposed()
+	return fmt.Sprintf("moved the music from %s to %s", src[0].Name, dest[0].Name), nil
 }
