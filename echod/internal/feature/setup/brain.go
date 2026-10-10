@@ -7,6 +7,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"slices"
 	"strconv"
 	"strings"
 
@@ -97,6 +98,10 @@ func brainSection(w http.ResponseWriter, token string) {
 	// Live voice.
 	fmt.Fprintf(w, `%s<label for="livevoice">The model's voice</label>
 	 <select id="livevoice" name="live_voice">%s</select>
+	 <label for="liveboost">Voice loudness</label>
+	 <select id="liveboost" name="live_boost">%s</select>
+	 <p class="note">The model's voice is quiet next to the other voices. Louder is limited so it does not distort, but a louder
+	  voice is also harder for the microphones to hear you over: turn the volume down before turning this up.</p>
 	 <p><label><input type="checkbox" name="live_no_prompt" value="yes" style="width:auto"%s> Ignore &ldquo;Anything the
 	  assistant should know&rdquo; below (to hear the model without its persona)</label></p>
 	 <details><summary>Models</summary>
@@ -105,7 +110,7 @@ func brainSection(w http.ResponseWriter, token string) {
 	  <label for="livebackend">The model that does the thinking and the tools (leave empty for %s)</label>
 	  <input id="livebackend" name="live_backend" value="%s" autocomplete="off">
 	 </details></div>`,
-		part("div", "live", ""), liveVoiceOptions(b.LiveVoice), checkedIf(b.LiveNoPrompt),
+		part("div", "live", ""), liveVoiceOptions(b.LiveVoice), boostOptions(b.LiveBoost), checkedIf(b.LiveNoPrompt),
 		live.DefaultModel, html.EscapeString(b.LiveModel), live.DefaultBackend, html.EscapeString(b.LiveBackend))
 
 	// Servers and voices of the other ways.
@@ -190,6 +195,30 @@ func houseNote() string {
 	return "The house is not connected, so it cannot look at or operate devices; Home Assistant gives the device its address and token when it is paired."
 }
 
+// boostChoices are the loudness settings of the live voice, in decibels.
+var boostChoices = []int{0, 3, 6, 9}
+
+func boostOptions(cur int) string {
+	var sb strings.Builder
+	for _, db := range boostChoices {
+		label := "Normal"
+		if db > 0 {
+			label = fmt.Sprintf("+%d dB louder", db)
+		}
+		fmt.Fprintf(&sb, `<option value="%d"%s>%s</option>`, db, selected(db == cur), label)
+	}
+	return sb.String()
+}
+
+// boostFrom reads the choice, and takes anything else for Normal.
+func boostFrom(v string) int {
+	n, err := strconv.Atoi(strings.TrimSpace(v))
+	if err != nil || !slices.Contains(boostChoices, n) {
+		return 0
+	}
+	return n
+}
+
 // liveVoiceOptions are the choices for the model's voice, with the one in force selected. A name that is
 // not in the list (typed in an earlier version, or one the server has since allowed) stays a choice, so
 // opening the page and saving it does not change the voice.
@@ -234,6 +263,7 @@ func saveBrain(r *http.Request) string {
 		LiveModel:    v("live_model"),
 		LiveBackend:  v("live_backend"),
 		LiveNoPrompt: r.PostFormValue("live_no_prompt") == "yes",
+		LiveBoost:    boostFrom(r.PostFormValue("live_boost")),
 	}
 	if b.Mode != config.BrainHomeAssistant && b.Mode != config.BrainDirect && b.Mode != config.BrainRealtime && b.Mode != config.BrainLive {
 		return "that is not a way of answering this device knows"

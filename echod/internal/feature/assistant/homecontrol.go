@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/HuskerMinion/techo5/echod/internal/config"
+	"github.com/HuskerMinion/techo5/echod/internal/feature/media"
 	"github.com/HuskerMinion/techo5/echod/internal/lib/hass"
 	"github.com/HuskerMinion/techo5/echod/internal/lib/llm"
 )
@@ -140,7 +141,13 @@ func homeTools() []tool {
 				if err != nil {
 					return "", err
 				}
-				return stopMusic(list, argString(a, "player"), hass.Get().Service)
+				out, err := stopMusic(list, argString(a, "player"), hass.Get().Service)
+				if err == nil && stoppedHere(argString(a, "player"), config.Get().Device.Name) {
+					// The stop went through Music Assistant, which this device cannot tell from a pause: the track
+					// would stay on the screen with play on it. The room has asked for the music to stop, so it says so.
+					media.Get().OnTransport.Emit(media.TransportStop)
+				}
+				return out, err
 			}},
 
 		{llm.Tool{Name: "home_control", Description: "Operate a device in the house. device is words from its name or room " +
@@ -773,4 +780,13 @@ func homeWeather(list []hass.Exposed, days int, now time.Time, forecast func(ent
 		shown++
 	}
 	return sb.String(), nil
+}
+
+// stoppedHere is whether a stop of the player named (all of them, when none is) includes this device's own.
+func stoppedHere(player, device string) bool {
+	player, device = strings.ToLower(strings.TrimSpace(player)), strings.ToLower(strings.TrimSpace(device))
+	if player == "" {
+		return true
+	}
+	return device != "" && (strings.Contains(device, player) || strings.Contains(player, device))
 }

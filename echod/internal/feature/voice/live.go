@@ -424,7 +424,8 @@ func (b *liveBackend) onHeard(e live.Event) {
 
 // onVoice takes a tenth of a second or so of the model's voice, at 24 kHz.
 func (b *liveBackend) onVoice(samples []int16) {
-	voiced := live.RMS(samples) > voicedRMS
+	voiced := live.RMS(samples) > voicedRMS // judged before any boost: the level it was spoken at
+	samples = live.Boost(samples, config.Get().Brain.LiveBoost)
 	ms := len(samples) * 1000 / live.SampleRate
 	b.mu.Lock()
 	if b.dropping {

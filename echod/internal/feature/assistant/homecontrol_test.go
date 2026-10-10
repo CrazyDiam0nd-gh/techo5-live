@@ -309,3 +309,23 @@ func TestADeviceFindsItselfInTheMusicScripts(t *testing.T) {
 		t.Errorf("with no list of devices to go by: %q, %v", own, listed)
 	}
 }
+
+// A stop that covers this device tells the room to let its track go; one for another player does not.
+func TestAStopCoversThisDeviceOnlyWhenItDoes(t *testing.T) {
+	for _, c := range []struct {
+		player, device string
+		want           bool
+	}{
+		{"", "Show", true}, // stop all music
+		{"show", "Show", true},
+		{"the show speaker", "Show", true}, // the player's name holds the device's
+		{"dot", "Living Room Dot", true},
+		{"desk pc", "Show", false},
+		{"home theater", "Living Room Dot", false},
+		{"desk pc", "", false},
+	} {
+		if got := stoppedHere(c.player, c.device); got != c.want {
+			t.Errorf("stoppedHere(%q, %q) = %v, want %v", c.player, c.device, got, c.want)
+		}
+	}
+}

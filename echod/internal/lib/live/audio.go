@@ -67,3 +67,23 @@ func RMS(s []int16) float64 {
 	}
 	return math.Sqrt(sum / float64(len(s)))
 }
+
+// Boost makes samples db decibels louder, with a soft limiter above the knee so that a loud peak is rounded
+// rather than clipped. db <= 0 returns the samples as they are.
+func Boost(in []int16, db int) []int16 {
+	if db <= 0 {
+		return in
+	}
+	const knee, ceiling = 20000.0, 32500.0
+	gain := math.Pow(10, float64(db)/20)
+	out := make([]int16, len(in))
+	for i, v := range in {
+		y := float64(v) * gain
+		if a := math.Abs(y); a > knee {
+			a = knee + (ceiling-knee)*math.Tanh((a-knee)/(ceiling-knee))
+			y = math.Copysign(a, y)
+		}
+		out[i] = int16(y)
+	}
+	return out
+}

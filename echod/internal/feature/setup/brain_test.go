@@ -350,3 +350,26 @@ func TestTheFormChecksBeforeItSends(t *testing.T) {
 		t.Error("the key is in the page")
 	}
 }
+
+func TestTheLiveVoiceLoudnessIsAChoice(t *testing.T) {
+	freshConfig(t)
+	for in, want := range map[string]int{"": 0, "0": 0, "3": 3, "6": 6, "9": 9, "12": 0, "-3": 0, "loud": 0} {
+		if got := boostFrom(in); got != want {
+			t.Errorf("boostFrom(%q) = %d, want %d", in, got, want)
+		}
+	}
+	if p := saveBrain(formPost(url.Values{"mode": {"live"}, "key": {"k"}, "live_boost": {"6"}})); p != "" {
+		t.Fatal(p)
+	}
+	if config.Get().Brain.LiveBoost != 6 {
+		t.Errorf("kept %d", config.Get().Brain.LiveBoost)
+	}
+	w := httptest.NewRecorder()
+	brainSection(w, "tok")
+	for _, want := range []string{`<select id="liveboost" name="live_boost">`, `<option value="6" selected>+6 dB louder</option>`,
+		`<option value="0">Normal</option>`, `<option value="9">+9 dB louder</option>`} {
+		if !strings.Contains(w.Body.String(), want) {
+			t.Errorf("the form lacks %q", want)
+		}
+	}
+}

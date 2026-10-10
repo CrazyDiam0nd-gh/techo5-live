@@ -248,3 +248,43 @@ func TestPCMAndRMS(t *testing.T) {
 		t.Errorf("rms %v", r)
 	}
 }
+
+func TestBoostIsLouderAndNeverClips(t *testing.T) {
+	quiet := make([]int16, 4800)
+	for i := range quiet {
+		quiet[i] = int16(2000 * math.Sin(float64(i)/7))
+	}
+	if got := Boost(quiet, 0); &got[0] != &quiet[0] {
+		t.Error("no boost copied the samples")
+	}
+	for _, db := range []int{3, 6, 9} {
+		out := Boost(quiet, db)
+		want := RMS(quiet) * math.Pow(10, float64(db)/20)
+		if got := RMS(out); math.Abs(got-want)/want > 0.01 {
+			t.Errorf("+%d dB: rms %.0f, want %.0f", db, got, want)
+		}
+	}
+	// Loud material is rounded, not clipped: nothing reaches full scale, and louder in is never quieter out.
+	loud := make([]int16, 2000)
+	for i := range loud {
+		loud[i] = int16(30000 * math.Sin(float64(i)/5))
+	}
+	var prev float64
+	for _, db := range []int{3, 6, 9} {
+		out := Boost(loud, db)
+		for _, v := range out {
+			if v > 32500 || v < -32500 {
+				t.Fatalf("+%d dB reached %d", db, v)
+			}
+		}
+		if r := RMS(out); r < prev {
+			t.Errorf("+%d dB is quieter than the step before", db)
+		} else {
+			prev = r
+		}
+	}
+	// A sample under the knee keeps its sign and rises by the gain.
+	if got := Boost([]int16{-1000, 1000}, 6); got[0] > -1900 || got[0] < -2100 || got[1] < 1900 || got[1] > 2100 {
+		t.Errorf("+6 dB on 1000: %v", got)
+	}
+}

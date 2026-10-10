@@ -708,3 +708,31 @@ func TestLiveAHeldPauseIsOneEvent(t *testing.T) {
 		t.Errorf("%d samples delivered, want about %d: the pause is part of the reply", total, want)
 	}
 }
+
+// With a boost set the voice that reaches the speaker is louder, and what counts as speaking is judged on
+// the level it was spoken at.
+func TestLiveTheVoiceIsPlayedLouderWhenAsked(t *testing.T) {
+	level := func(boost int) float64 {
+		_, events, f := liveSetup(t, nil)
+		br := config.Get().Brain
+		br.LiveBoost = boost
+		if err := config.Set().Brain().Set(br); err != nil {
+			t.Fatal(err)
+		}
+		f.heard(" Hello", 400)
+		f.voice(true, 4)
+		f.voice(false, 14)
+		got := waitFor(t, events, evStreamEnd)
+		var all []int16
+		for _, e := range got {
+			if e.kind == evStreamAudio {
+				all = append(all, live.PCM16(e.audio)...)
+			}
+		}
+		return live.RMS(all)
+	}
+	normal, loud := level(0), level(6)
+	if loud < normal*1.9 || loud > normal*2.1 {
+		t.Errorf("+6 dB: %.0f against %.0f, want about twice", loud, normal)
+	}
+}
