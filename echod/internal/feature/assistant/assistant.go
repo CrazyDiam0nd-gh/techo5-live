@@ -31,6 +31,9 @@ func init() {
 // read as a session opens.
 func kit() voice.Kit {
 	ts := tools()
+	if hass.Get().Ready() {
+		ts = forHouse(ts)
+	}
 	rt := make([]realtime.Tool, len(ts))
 	for i, t := range ts {
 		rt[i] = realtime.Tool{Name: t.Name, Description: t.Description, Parameters: t.Parameters}
@@ -273,4 +276,23 @@ func buildGuidance() string {
 		s += "\n\n" + c
 	}
 	return s
+}
+
+// forHouse takes the device's own music abilities away from the model when the house has its own. The
+// house's scripts know about its speakers and its music service; the device's tools only know the device,
+// so "stop the music" through the device's stop reports success while the music plays on. Telling the
+// model which to use did not hold, so it is not given the choice: the device's stop is for a ringing
+// alarm or timer, and playing music is the script's.
+func forHouse(ts []tool) []tool {
+	out := make([]tool, 0, len(ts))
+	for _, t := range ts {
+		switch t.Name {
+		case "play_music":
+			continue
+		case "stop":
+			t.Description = "Silence a ringing alarm or timer on this device. It does not stop music: use the house's Stop music script for that."
+		}
+		out = append(out, t)
+	}
+	return out
 }
