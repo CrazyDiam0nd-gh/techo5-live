@@ -85,6 +85,22 @@ func homeTools() []tool {
 				return playOnPlayer(list, argString(a, "name"), argString(a, "kind"), argString(a, "player"), shuffle, hass.Get().Service)
 			}},
 
+		{llm.Tool{Name: "home_stop_music", Description: "Stop music. With no player named it stops every speaker and computer " +
+			"that is playing or paused, wherever it is: use that for 'stop the music', 'stop all music' and 'be quiet'. " +
+			"Name a player only when the person names one.",
+			Parameters: object(map[string]any{
+				"player": str("Words from the name of one media player; empty for all of them."),
+			})},
+			func(a map[string]any) (string, error) {
+				ctx, cancel := context.WithTimeout(context.Background(), homeTimeout)
+				defer cancel()
+				list, err := hass.Get().ExposedEntities(ctx)
+				if err != nil {
+					return "", err
+				}
+				return stopMusic(list, argString(a, "player"), hass.Get().Service)
+			}},
+
 		{llm.Tool{Name: "home_control", Description: "Operate a device in the house. device is words from its name or room " +
 			"(like 'kitchen island', 'bedroom blind'); action is one of: turn_on, turn_off, toggle, set_brightness (value 0 to 100), " +
 			"set_color (color), open, close, stop, set_position (value 0 to 100), set_temperature (value), set_volume (value 0 to 100), " +
@@ -552,4 +568,49 @@ func playOnPlayer(list []hass.Exposed, name, kind, player string, shuffle bool,
 	}
 	hass.ForgetExposed()
 	return fmt.Sprintf("started %s %q on %s", kind, name, target.Name), nil
+}
+
+// stopMusic stops the media players that are playing or paused, or the one that was named. Asked to stop
+// the music, nobody means one speaker of several.
+func stopMusic(list []hass.Exposed, player string, call func(domain, service string, data map[string]any) error) (string, error) {
+	var players []hass.Exposed
+	for _, e := range list {
+		if e.Domain == "media_player" {
+			players = append(players, e)
+		}
+	}
+	var targets []hass.Exposed
+	if strings.TrimSpace(player) != "" {
+		targets = match(players, player)
+		if len(targets) == 0 {
+			return "", fmt.Errorf("no media player matches %q", player)
+		}
+	} else {
+		for _, e := range players {
+			switch e.State {
+			case "playing", "paused", "buffering":
+				targets = append(targets, e)
+			}
+		}
+		if len(targets) == 0 {
+			return "nothing is playing", nil
+		}
+	}
+	var stopped, failed []string
+	for _, e := range targets {
+		if err := call("media_player", "media_stop", map[string]any{"entity_id": e.ID}); err != nil {
+			failed = append(failed, fmt.Sprintf("%s: %v", e.Name, err))
+			continue
+		}
+		stopped = append(stopped, e.Name)
+	}
+	hass.ForgetExposed()
+	if len(stopped) == 0 {
+		return "", errors.New(strings.Join(failed, "; "))
+	}
+	out := "stopped: " + strings.Join(stopped, ", ")
+	if len(failed) > 0 {
+		out += ". Could not stop: " + strings.Join(failed, "; ")
+	}
+	return out, nil
 }

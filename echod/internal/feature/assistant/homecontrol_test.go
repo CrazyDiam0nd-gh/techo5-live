@@ -181,3 +181,32 @@ func TestPlayOnAnotherPlayer(t *testing.T) {
 		t.Error("played nothing")
 	}
 }
+
+func TestStopMusicStopsEverythingPlaying(t *testing.T) {
+	list := []hass.Exposed{
+		{ID: "media_player.dot", Domain: "media_player", Name: "Dot", State: "playing"},
+		{ID: "media_player.pop_os", Domain: "media_player", Name: "Pop!_OS", State: "paused"},
+		{ID: "media_player.home_theater", Domain: "media_player", Name: "Home Theater", State: "off"},
+		{ID: "light.x", Domain: "light", Name: "X", State: "playing"},
+	}
+	var stopped []string
+	rec := func(d, s string, data map[string]any) error {
+		if d != "media_player" || s != "media_stop" {
+			t.Errorf("%s.%s", d, s)
+		}
+		stopped = append(stopped, data["entity_id"].(string))
+		return nil
+	}
+	out, err := stopMusic(list, "", rec)
+	if err != nil || len(stopped) != 2 || stopped[0] != "media_player.dot" || stopped[1] != "media_player.pop_os" || !strings.Contains(out, "Pop!_OS") {
+		t.Errorf("out=%q err=%v stopped=%v", out, err, stopped)
+	}
+	stopped = nil
+	if _, err := stopMusic(list, "desk pc", rec); err != nil || len(stopped) != 1 {
+		t.Errorf("named: %v %v", err, stopped)
+	}
+	stopped = nil
+	if out, _ := stopMusic(list[2:3], "", rec); out != "nothing is playing" || len(stopped) != 0 {
+		t.Errorf("idle house: %q %v", out, stopped)
+	}
+}
