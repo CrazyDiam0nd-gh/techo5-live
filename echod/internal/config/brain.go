@@ -32,6 +32,9 @@ type Brain struct {
 	LiveVoice   string `json:"live_voice,omitempty"`
 	LiveModel   string `json:"live_model,omitempty"`
 	LiveBackend string `json:"live_backend,omitempty"`
+	// LiveHear is how readily the live model is sent your voice while it is speaking: "" (careful), "balanced",
+	// "sensitive", or "open" for no gate at all, which leaves the echo canceller to do it alone.
+	LiveHear string `json:"live_hear,omitempty"`
 	// LiveBoost is how many decibels louder the live voice is played: 0, 3, 6 or 9. The model's voice is
 	// recorded quietly (about 8 dB under the Piper voice); a limiter keeps a louder one from distorting.
 	LiveBoost int `json:"live_boost,omitempty"`

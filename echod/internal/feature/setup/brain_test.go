@@ -396,3 +396,26 @@ func TestHowLongALiveSessionStaysReadyIsAChoice(t *testing.T) {
 		}
 	}
 }
+
+func TestHearingYouWhileItTalksIsAChoice(t *testing.T) {
+	freshConfig(t)
+	for in, want := range map[string]string{"": "", "balanced": "balanced", "sensitive": "sensitive", "open": "open", "OPEN": "", "loud": ""} {
+		if got := hearFrom(in); got != want {
+			t.Errorf("hearFrom(%q) = %q, want %q", in, got, want)
+		}
+	}
+	if p := saveBrain(formPost(url.Values{"mode": {"live"}, "key": {"k"}, "live_hear": {"open"}})); p != "" {
+		t.Fatal(p)
+	}
+	if config.Get().Brain.LiveHear != "open" {
+		t.Errorf("kept %q", config.Get().Brain.LiveHear)
+	}
+	w := httptest.NewRecorder()
+	brainSection(w, "tok")
+	for _, want := range []string{`<select id="livehear" name="live_hear">`, `<option value="open" selected>Open microphone</option>`,
+		`<option value="">Careful (default)</option>`, `<option value="balanced">Balanced</option>`, "Hearing you while it talks"} {
+		if !strings.Contains(w.Body.String(), want) {
+			t.Errorf("the form lacks %q", want)
+		}
+	}
+}

@@ -36,7 +36,8 @@ const (
 	refFall = 0.6
 
 	// meterMargin is how far over the learned fraction a frame has to be: 9 dB. Echo is not exactly
-	// proportional, and a mistake here is a reply cut off by itself.
+	// proportional, and a mistake here is a reply cut off by itself. It is the default: a live
+	// conversation may ask for less (SetEchoMargin), at the risk of the device hearing itself.
 	meterMargin = 2.8
 
 	// meterFloor is the least residual taken for speech, whatever the playback: about -55 dBFS, above any
@@ -49,6 +50,22 @@ const (
 	// kFall lets the learned fraction drift down again, slowly, as the filter converges.
 	kFall = 0.9995
 )
+
+// echoMargin is the margin in force, as float bits so that a conversation can change it while frames are being
+// judged.
+var echoMargin = func() *atomic.Uint64 {
+	v := new(atomic.Uint64)
+	v.Store(math.Float64bits(meterMargin))
+	return v
+}()
+
+// SetEchoMargin sets how many times the expected echo a frame has to be to count as speech; values under 1.1
+// are taken for 1.1, since at 1 every bit of echo would be speech. EchoMargin reads it back.
+func SetEchoMargin(m float64) { echoMargin.Store(math.Float64bits(math.Max(m, 1.1))) }
+func EchoMargin() float64     { return math.Float64frombits(echoMargin.Load()) }
+
+// DefaultEchoMargin puts the margin back to what the meter was tuned with.
+func DefaultEchoMargin() { SetEchoMargin(meterMargin) }
 
 func frameRMS(f []int16) float64 {
 	if len(f) == 0 {
@@ -87,7 +104,7 @@ func (m *echoMeter) feed(ref, out []int16) bool {
 			m.over.Store(false)
 			return false
 		}
-		expected := m.k * m.refEnv * meterMargin
+		expected := m.k * m.refEnv * EchoMargin()
 		speech := o > math.Max(expected, meterFloor)
 		m.k *= kFall
 		// Learned only where the echo dominates: in a gap a person's voice is most of what is there, and

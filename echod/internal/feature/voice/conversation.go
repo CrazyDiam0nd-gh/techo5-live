@@ -1154,6 +1154,17 @@ func (c *conversation) stream(ctx context.Context, be backend, slot int, followU
 	var gate echoGate
 	defer gate.Reset()
 
+	// How readily the live model is sent a voice over its own (see hearing). Every other pipeline keeps the margin
+	// the meter was tuned with.
+	openMic := false
+	if isLive(be) {
+		var margin float64
+		margin, openMic = hearing(config.Get().Brain.LiveHear)
+		mic.SetEchoMargin(margin)
+	} else {
+		mic.DefaultEchoMargin()
+	}
+
 	var peak, samples int
 	var energy float64
 	defer func() {
@@ -1201,7 +1212,7 @@ func (c *conversation) stream(ctx context.Context, be backend, slot int, followU
 			recording.Get().Frame(buf)
 
 			see(frame)
-			if keeps && c.Phase() == phaseReplying {
+			if keeps && c.Phase() == phaseReplying && !openMic {
 				// Its own voice is playing: send what is clearly someone else (echoGate).
 				src := c.source
 				for _, f := range gate.Feed(append([]int16(nil), frame...), src.OverEcho(), src.EchoResidual()) {

@@ -102,6 +102,12 @@ func brainSection(w http.ResponseWriter, token string) {
 	 <select id="livekeep" name="live_keep">%s</select>
 	 <p class="note">A new conversation takes two to three seconds to start. Staying ready keeps one open between questions so the
 	  next starts at once, but an open conversation is billed (about five cents a minute) whether or not anyone is talking.</p>
+	 <label for="livehear">Hearing you while it talks</label>
+	 <select id="livehear" name="live_hear">%s</select>
+	 <p class="note">While it speaks, the microphones also hear its own voice. <em>Careful</em> only passes your voice on once it is clearly
+	  louder than the echo, which is safe but can mean raising your voice to interrupt. <em>Balanced</em> and <em>Sensitive</em> let a
+	  normal voice through sooner. <em>Open microphone</em> passes everything and leaves the echo canceller to remove its voice, as a
+	  phone does: the most natural, and the one where it may hear itself and stop. A lower volume helps all of them.</p>
 	 <label for="liveboost">Voice loudness</label>
 	 <select id="liveboost" name="live_boost">%s</select>
 	 <p class="note">The model's voice is quiet next to the other voices. Louder is limited so it does not distort, but a louder
@@ -114,7 +120,7 @@ func brainSection(w http.ResponseWriter, token string) {
 	  <label for="livebackend">The model that does the thinking and the tools (leave empty for %s)</label>
 	  <input id="livebackend" name="live_backend" value="%s" autocomplete="off">
 	 </details></div>`,
-		part("div", "live", ""), liveVoiceOptions(b.LiveVoice), keepOptions(b.LiveKeep), boostOptions(b.LiveBoost), checkedIf(b.LiveNoPrompt),
+		part("div", "live", ""), liveVoiceOptions(b.LiveVoice), keepOptions(b.LiveKeep), hearOptions(b.LiveHear), boostOptions(b.LiveBoost), checkedIf(b.LiveNoPrompt),
 		live.DefaultModel, html.EscapeString(b.LiveModel), live.DefaultBackend, html.EscapeString(b.LiveBackend))
 
 	// Servers and voices of the other ways.
@@ -197,6 +203,30 @@ func houseNote() string {
 		return "The house is connected: it can look at and operate whatever is exposed to Home Assistant's voice assistant."
 	}
 	return "The house is not connected, so it cannot look at or operate devices; Home Assistant gives the device its address and token when it is paired."
+}
+
+// hearChoices are the levels of hearing you while it talks, as config.Brain.LiveHear holds them.
+var hearChoices = []struct{ value, label string }{
+	{"", "Careful (default)"}, {"balanced", "Balanced"}, {"sensitive", "Sensitive"}, {"open", "Open microphone"},
+}
+
+func hearOptions(cur string) string {
+	var sb strings.Builder
+	for _, h := range hearChoices {
+		fmt.Fprintf(&sb, `<option value="%s"%s>%s</option>`, h.value, selected(h.value == cur), h.label)
+	}
+	return sb.String()
+}
+
+// hearFrom reads the choice, and takes anything else for the default.
+func hearFrom(v string) string {
+	v = strings.TrimSpace(v)
+	for _, h := range hearChoices {
+		if h.value == v {
+			return v
+		}
+	}
+	return ""
 }
 
 // keepChoices are how long a live session may stay open after an answer, in seconds; 0 is the default 20.
@@ -297,6 +327,7 @@ func saveBrain(r *http.Request) string {
 		LiveNoPrompt: r.PostFormValue("live_no_prompt") == "yes",
 		LiveBoost:    boostFrom(r.PostFormValue("live_boost")),
 		LiveKeep:     keepFrom(r.PostFormValue("live_keep")),
+		LiveHear:     hearFrom(r.PostFormValue("live_hear")),
 	}
 	if b.Mode != config.BrainHomeAssistant && b.Mode != config.BrainDirect && b.Mode != config.BrainRealtime && b.Mode != config.BrainLive {
 		return "that is not a way of answering this device knows"
