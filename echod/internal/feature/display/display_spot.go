@@ -1204,7 +1204,7 @@ func (d *Display) frame() time.Duration {
 	on, view, at := d.on, d.view, d.viewAt
 	s := roundScene{
 		now:       now,
-		phase:     view.Phase,
+		phase:     steadyPhase(view.Phase, config.Get().Brain.Live(), view.Heard, view.Reply),
 		heard:     view.Heard,
 		reply:     view.Reply,
 		menuOpen:  d.menuOpen,

@@ -1962,7 +1962,7 @@ func (d *Display) frame() time.Duration {
 		return 80 * time.Millisecond
 	}
 
-	s := scene{now: now, phase: view.Phase, heard: view.Heard, reply: view.Reply, since: at, ring: ring, call: call}
+	s := scene{now: now, phase: steadyPhase(view.Phase, config.Get().Brain.Live(), view.Heard, view.Reply), heard: view.Heard, reply: view.Reply, since: at, ring: ring, call: call}
 	s.snooze = config.Get().Alarms.Snooze()
 	s.alarms = alarm.Get().View(now)
 	s.timers = timer.Get().List(now)

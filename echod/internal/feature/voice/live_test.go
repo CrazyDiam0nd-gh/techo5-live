@@ -819,3 +819,20 @@ func TestLiveHandingOverMovesTheConversationOn(t *testing.T) {
 		}
 	}
 }
+
+// A live follow-up keeps the words on the screen from the turn before; a new conversation, and every other
+// pipeline, starts the screen clean.
+func TestKeepsWordsOnlyForALiveFollowUp(t *testing.T) {
+	l, r := newLive(func(event) {}), newRealtime(func(event) {})
+	for _, tc := range []struct {
+		be       backend
+		followUp bool
+		want     bool
+	}{
+		{l, true, true}, {l, false, false}, {r, true, false}, {r, false, false},
+	} {
+		if got := keepsWords(tc.be, tc.followUp); got != tc.want {
+			t.Errorf("keepsWords(%T, follow-up %v) = %v, want %v", tc.be, tc.followUp, got, tc.want)
+		}
+	}
+}

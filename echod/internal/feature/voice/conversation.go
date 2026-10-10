@@ -412,6 +412,9 @@ func (c *conversation) handle(e event) {
 			slog.Info("heard", "slot", c.slot+1, "text", e.text)
 			c.log.Heard(e.text)
 			c.shown.Heard = e.text
+			if isLive(c.be) {
+				c.shown.Reply = "" // the answer to the last question is not the answer to this one
+			}
 			Changed.Emit(c.shown)
 		}
 		// Home Assistant has no alarm of this device's to stop or snooze, so "stop the alarm" and
@@ -704,7 +707,9 @@ func (c *conversation) start(n nextTurn) {
 	be := c.be
 	c.send("start", func() error { return be.Start(phrase) })
 
-	c.shown = State{}
+	if !keepsWords(c.be, n.followUp) {
+		c.shown = State{}
+	}
 	c.enter(phaseListening)
 	c.turn.Listening()
 	c.reply = reply{}
@@ -1299,3 +1304,8 @@ func isLive(be backend) bool {
 	_, ok := be.(*liveBackend)
 	return ok
 }
+
+// keepsWords is whether a turn that opens keeps the words on the screen from the one before. In a live
+// conversation a follow-up is the same conversation going on, and wiping the screen for each turn made it
+// flash a status card every few seconds; the words stay until the new ones replace them.
+func keepsWords(be backend, followUp bool) bool { return followUp && isLive(be) }
