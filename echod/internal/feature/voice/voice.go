@@ -178,6 +178,14 @@ func (v *Voice) Start(slot int) {
 // is.
 func (v *Voice) Busy() bool { return v.turn.Busy() }
 
+// OwnVoicePlaying is whether the sound the speaker is making is the assistant's own reply in a mode that
+// keeps the microphones open through it (live conversation and live voice). That voice is in the microphones
+// at the volume of the reply, and the stop word can mistake it for itself.
+func (v *Voice) OwnVoicePlaying() bool {
+	b := config.Get().Brain
+	return (b.Live() || b.Realtime()) && v.turn.Phase() == phaseReplying
+}
+
 // Cancel stops a turn that is running, for a gesture that turned out to mean something else: the
 // second tap of a double, the way a long hold already undoes the turn its hold began.
 func (v *Voice) Cancel() {

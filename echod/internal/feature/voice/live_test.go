@@ -747,3 +747,21 @@ func TestLiveKeepForFollowsTheChoice(t *testing.T) {
 		t.Errorf("chosen %v", keepFor())
 	}
 }
+
+func TestOwnVoicePlayingOnlyInTheModesThatKeepTheMicrophoneOpen(t *testing.T) {
+	config.Use(filepath.Join(t.TempDir(), "state.json"))
+	_ = config.Set().Brain().SetKey("k")
+	v := &Voice{turn: &conversation{}}
+	for _, mode := range []config.BrainMode{config.BrainLive, config.BrainRealtime, config.BrainDirect, config.BrainHomeAssistant} {
+		_ = config.Set().Brain().Set(config.Brain{Mode: mode, TTS: "h:1"})
+		if v.OwnVoicePlaying() {
+			t.Errorf("mode %q says its voice is playing while idle", mode)
+		}
+		v.turn.visible.Store(int32(phaseReplying))
+		want := mode == config.BrainLive || mode == config.BrainRealtime
+		if got := v.OwnVoicePlaying(); got != want {
+			t.Errorf("mode %q replying: %v, want %v", mode, got, want)
+		}
+		v.turn.visible.Store(int32(phaseIdle))
+	}
+}

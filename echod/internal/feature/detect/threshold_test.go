@@ -12,19 +12,19 @@ func TestTheStopWordGetsTheSlackTheOtherSlotsGet(t *testing.T) {
 	base := func(int) float64 { return 0.8 }
 	const stop = 0.7
 
-	quiet := thresholdFor(StopSlot, base, stop, false)
+	quiet := thresholdFor(StopSlot, base, stop, false, false)
 	if quiet != stop {
 		t.Errorf("stop threshold in a quiet room is %v, want the configured %v", quiet, stop)
 	}
 
-	playing := thresholdFor(StopSlot, base, stop, true)
+	playing := thresholdFor(StopSlot, base, stop, true, false)
 	if want := stop - playingSlack; playing != want {
 		t.Errorf("stop threshold while the canceller runs is %v, want %v", playing, want)
 	}
 
 	// The same drop the other slots get, so the stop word is no harder to say over a speaker than
 	// the wake word is.
-	other := base(0) - thresholdFor(0, base, stop, true)
+	other := base(0) - thresholdFor(0, base, stop, true, false)
 	if got := stop - playing; got != other {
 		t.Errorf("the stop word drops by %v while slot 0 drops by %v; they should match", got, other)
 	}
@@ -34,10 +34,10 @@ func TestTheStopWordGetsTheSlackTheOtherSlotsGet(t *testing.T) {
 func TestTheSlackStopsAtTheFloor(t *testing.T) {
 	base := func(int) float64 { return 0.52 }
 
-	if got := thresholdFor(StopSlot, base, 0.52, true); got != slackFloor {
+	if got := thresholdFor(StopSlot, base, 0.52, true, false); got != slackFloor {
 		t.Errorf("a stop threshold of 0.52 with slack is %v, want the floor %v", got, slackFloor)
 	}
-	if got := thresholdFor(0, base, 0.7, true); got != slackFloor {
+	if got := thresholdFor(0, base, 0.7, true, false); got != slackFloor {
 		t.Errorf("a wake threshold of 0.52 with slack is %v, want the floor %v", got, slackFloor)
 	}
 }
@@ -47,8 +47,38 @@ func TestTheSlotsKeepTheirOwnThresholds(t *testing.T) {
 	base := func(slot int) float64 { return 0.6 + float64(slot)/100 }
 
 	for _, slot := range []int{0, 1, 2} {
-		if got, want := thresholdFor(slot, base, 0.7, false), base(slot); got != want {
+		if got, want := thresholdFor(slot, base, 0.7, false, false), base(slot); got != want {
 			t.Errorf("slot %d judged at %v, want its own %v", slot, got, want)
 		}
+	}
+}
+
+// While the assistant's own voice is what plays, the stop word gets no slack: a score of 0.60 to 0.63 is the reply
+// heard in the microphones, a stop someone said scores 0.76 or more. Other sounds, and every other word, keep theirs.
+func TestTheStopWordGetsNoSlackOverTheAssistantsOwnVoice(t *testing.T) {
+	base := func(int) float64 { return 0.75 }
+	const stop = 0.7
+	if got := thresholdFor(StopSlot, base, stop, true, true); got != stop {
+		t.Errorf("over its own voice the stop word is judged at %v, want %v", got, stop)
+	}
+	if got := thresholdFor(StopSlot, base, stop, true, false); got >= stop {
+		t.Errorf("over music it should still have slack, got %v", got)
+	}
+	if got := thresholdFor(StopSlot, base, stop, false, true); got != stop {
+		t.Errorf("with nothing playing %v", got)
+	}
+	// The wake words are not the stop word's business.
+	if got := thresholdFor(0, base, stop, true, true); got >= base(0) {
+		t.Errorf("a wake word over the reply lost its slack: %v", got)
+	}
+	// What was heard on the Show: its own voice scored 0.60 to 0.63, which now falls short; a stop scored 0.76.
+	cutoff := thresholdFor(StopSlot, base, stop, true, true)
+	for _, own := range []float64{0.60, 0.6305, 0.6023} {
+		if own >= cutoff {
+			t.Errorf("its own voice at %v would still stop it", own)
+		}
+	}
+	if 0.76 < cutoff {
+		t.Error("a stop that scored 0.76 would no longer be heard")
 	}
 }

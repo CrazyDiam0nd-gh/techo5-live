@@ -69,12 +69,17 @@ const slackFloor = 0.5
 // it is the one word said while the speaker is certainly playing, because playing is what it is
 // asked to stop. Exempting it made the one word whose job is to interrupt a sound the only word
 // judged with no allowance for the sound.
-func thresholdFor(slot int, base func(int) float64, stop float64, canceling bool) float64 {
+//
+// The exception is the assistant's own voice. In the modes that keep the microphones open through a reply,
+// that voice is in them at the reply's volume, and with the slack the stop word fired on it: on a Show at a
+// high volume, three replies in four were stopped by a score of 0.60 to 0.63, where a stop someone said
+// scored 0.76 to 0.94. So while it plays, the stop word is judged against its own threshold, as in a quiet room.
+func thresholdFor(slot int, base func(int) float64, stop float64, canceling, ownVoice bool) float64 {
 	t := stop
 	if slot != StopSlot {
 		t = base(slot)
 	}
-	if canceling {
+	if canceling && !(slot == StopSlot && ownVoice) {
 		t = max(t-playingSlack, slackFloor)
 	}
 	return t
@@ -86,7 +91,7 @@ func newDetect() *Detect {
 	e := New(StopSlot+1, mic.Get())
 
 	e.Threshold = func(slot int) float64 {
-		return thresholdFor(slot, wakeword.Threshold, config.Get().Wake.Stop.Threshold, mic.Get().Canceling())
+		return thresholdFor(slot, wakeword.Threshold, config.Get().Wake.Stop.Threshold, mic.Get().Canceling(), voice.Get().OwnVoicePlaying())
 	}
 
 	e.OnDetect = func(slot int) {
