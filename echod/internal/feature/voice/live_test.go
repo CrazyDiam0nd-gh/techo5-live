@@ -680,3 +680,31 @@ func TestCleanSaidDropsSoundTags(t *testing.T) {
 		}
 	}
 }
+
+// A pause held back while the backend worked is delivered with the speech after it as one piece of audio,
+// not as dozens of events that would overflow the conversation's queue.
+func TestLiveAHeldPauseIsOneEvent(t *testing.T) {
+	_, events, f := liveSetup(t, nil)
+	f.heard(" Is it on", 400)
+	f.send(map[string]any{"type": "session.delegation.created", "delegation": map[string]any{"id": "d"}})
+	f.voice(true, 3)
+	f.voice(false, 60) // six seconds of waiting, held back
+	f.voice(true, 4)
+	time.Sleep(300 * time.Millisecond)
+	var audio []event
+	for len(events) > 0 {
+		if e := <-events; e.kind == evStreamAudio {
+			audio = append(audio, e)
+		}
+	}
+	if len(audio) > 12 { // 7 as it should be; one per chunk would be 67
+		t.Errorf("%d audio events; the held pause should come out with the speech after it, in one", len(audio))
+	}
+	total := 0
+	for _, e := range audio {
+		total += len(e.audio) / 2
+	}
+	if want := (3 + 60 + 4) * 1600; total < want-300 || total > want+300 {
+		t.Errorf("%d samples delivered, want about %d: the pause is part of the reply", total, want)
+	}
+}

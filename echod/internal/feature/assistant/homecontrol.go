@@ -49,7 +49,8 @@ func homeTools() []tool {
 
 		{llm.Tool{Name: "home_run_script", Description: "Run one of the house's scripts, which do things the other tools cannot: " +
 			"play music, change the home theater volume, start a computer. The list of scripts, what each one is for and the fields " +
-			"it takes is in your instructions. Give the fields it asks for; leave out the ones it says to leave out. The answer is " +
+			"it takes is in your instructions. Give the fields it asks for; leave out the ones it says to leave out. For music, " +
+			"run a script only when the person names a speaker it knows; with none named, use home_play_music. The answer is " +
 			"what the script said happened: say that, and do not claim more.",
 			Parameters: object(map[string]any{
 				"script": str("The script's name, like 'Play playlist'."),
@@ -517,14 +518,14 @@ func runScript(list []hass.Exposed, name string, fields map[string]any, run func
 // scriptCatalog tells the model which scripts there are, what each is for and what it takes, read from
 // the scripts themselves. A script the user exposes to Home Assistant's voice assistant appears here
 // without anything else being set up.
-func scriptCatalog() string {
+func scriptCatalog() (string, []string) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	list, err := hass.Get().ExposedEntities(ctx)
 	if err != nil {
-		return ""
+		return "", nil
 	}
-	var lines []string
+	var lines, devices []string
 	size := 0
 	for _, e := range list {
 		if e.Domain != "script" {
@@ -534,6 +535,11 @@ func scriptCatalog() string {
 		if err != nil {
 			info = hass.ScriptInfo{Name: e.Name}
 		}
+		for _, f := range info.Fields {
+			if strings.EqualFold(f.Name, "device") {
+				devices = append(devices, f.Options...)
+			}
+		}
 		line := scriptLine(e.Name, info)
 		if size += len(line); size > 6000 {
 			break
@@ -541,9 +547,9 @@ func scriptCatalog() string {
 		lines = append(lines, line)
 	}
 	if len(lines) == 0 {
-		return ""
+		return "", nil
 	}
-	return "Scripts you can run with home_run_script (name: what it is for. Fields):\n" + strings.Join(lines, "\n")
+	return "Scripts you can run with home_run_script (name: what it is for. Fields):\n" + strings.Join(lines, "\n"), devices
 }
 
 // scriptLine is one script as the model reads it.

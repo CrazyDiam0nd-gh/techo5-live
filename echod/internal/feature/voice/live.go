@@ -477,10 +477,15 @@ func (b *liveBackend) onVoice(samples []int16) {
 	if postHeard {
 		b.post(event{kind: evHeard, text: heard})
 	}
+	// One event for the lot: a pause held back while the backend worked comes out with the speech that ends
+	// it, forty chunks or more at once, and the conversation's queue holds thirty-two. Sent one by one the
+	// overflow was dropped, which is a piece of the model's voice gone.
+	var audio []byte
 	for _, chunk := range forward {
-		if len(chunk) > 0 {
-			b.post(event{kind: evStreamAudio, audio: live.Bytes(chunk), gen: gen})
-		}
+		audio = append(audio, live.Bytes(chunk)...)
+	}
+	if len(audio) > 0 {
+		b.post(event{kind: evStreamAudio, audio: audio, gen: gen})
 	}
 	if ended {
 		if said != "" {

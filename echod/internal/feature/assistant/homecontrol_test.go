@@ -284,3 +284,28 @@ func TestHomeWeather(t *testing.T) {
 		t.Error("no weather source, no error")
 	}
 }
+
+// The music scripts default to the Dot and tell the model not to ask, so a device has to know which
+// choice is itself: "Show" is the choice "show", the Dot is "dot", and a device the scripts do not list is
+// told to play music itself.
+func TestADeviceFindsItselfInTheMusicScripts(t *testing.T) {
+	options := []string{"dot", "show", "denon", "home theater"}
+	for name, want := range map[string]struct {
+		own    string
+		listed bool
+	}{
+		"Show":            {"show", true},
+		"show":            {"show", true},
+		"Living Room Dot": {"dot", true},
+		"Home Theater":    {"home theater", true},
+		"Kitchen":         {"", true}, // the scripts have a list and this device is not on it
+		"":                {"", false},
+	} {
+		if own, listed := ownScriptDevice(name, options); own != want.own || listed != want.listed {
+			t.Errorf("ownScriptDevice(%q) = %q, %v; want %q, %v", name, own, listed, want.own, want.listed)
+		}
+	}
+	if own, listed := ownScriptDevice("Show", nil); own != "" || listed {
+		t.Errorf("with no list of devices to go by: %q, %v", own, listed)
+	}
+}

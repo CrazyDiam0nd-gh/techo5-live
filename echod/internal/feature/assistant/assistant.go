@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -283,10 +284,41 @@ func buildGuidance() string {
 		"that. To stop music use home_stop_music, which stops every player unless one is named. The music scripts know only the Dot and the home " +
 		"theater: to play on any other player, such as a computer, use home_play_music. To move playing music to " +
 		"another player, or bring it to this device, use home_move_music."
-	if c := scriptCatalog(); c != "" {
+	c, devices := scriptCatalog()
+	name := config.Get().Device.Name
+	switch own, listed := ownScriptDevice(name, devices); {
+	case own != "":
+		// The scripts say they default to the Dot and that the model should not ask, so left to it a
+		// request with no speaker named plays on the Dot, from any device. This one says which it is.
+		s += "\n\nThis device is " + strconv.Quote(name) + ". When the person does not say which speaker to play music on, " +
+			"or to stop, give the music scripts the device " + strconv.Quote(own) + ": it is this one. The scripts' own " +
+			"default is a different speaker."
+	case listed:
+		s += "\n\nThis device is " + strconv.Quote(name) + ", which the music scripts do not know. " +
+			"When the person does not say where to play music, play it here: use home_play_music and leave player empty. " +
+			"Never use a music script for that, because it would play on another speaker."
+	}
+	if c != "" {
 		s += "\n\n" + c
 	}
 	return s
+}
+
+// ownScriptDevice is the choice in the music scripts' device field that is this device, if one is, and
+// whether the scripts have such a list at all. "Living Room Dot" is the choice "dot"; with no list to go
+// by nothing is assumed.
+func ownScriptDevice(name string, devices []string) (own string, listed bool) {
+	name = strings.ToLower(strings.TrimSpace(name))
+	if name == "" || len(devices) == 0 {
+		return "", false
+	}
+	for _, d := range devices {
+		l := strings.ToLower(strings.TrimSpace(d))
+		if l != "" && (strings.Contains(name, l) || strings.Contains(l, name)) {
+			return d, true
+		}
+	}
+	return "", true
 }
 
 // forHouse takes the device's own music abilities away from the model when the house has its own. The
