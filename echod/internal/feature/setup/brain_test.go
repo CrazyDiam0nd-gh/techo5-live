@@ -211,3 +211,25 @@ func TestTheVoiceListShowsEveryVoiceWhateverIsChosen(t *testing.T) {
 		t.Error("coral is not the selected one")
 	}
 }
+
+func TestLiveVoiceCanIgnoreThePersona(t *testing.T) {
+	freshConfig(t)
+	if p := saveBrain(formPost(url.Values{"mode": {"live"}, "key": {"k"}, "prompt": {"You are a ship."}, "live_no_prompt": {"yes"}})); p != "" {
+		t.Fatal(p)
+	}
+	b := config.Get().Brain
+	if !b.LiveNoPrompt || b.Prompt != "You are a ship." {
+		t.Errorf("kept %+v: the text stays, only the live voice leaves it out", b)
+	}
+	w := httptest.NewRecorder()
+	brainSection(w, "tok")
+	if !strings.Contains(w.Body.String(), `name="live_no_prompt" value="yes" style="width:auto" checked`) {
+		t.Error("the box is not shown ticked")
+	}
+	if p := saveBrain(formPost(url.Values{"mode": {"live"}, "prompt": {"You are a ship."}})); p != "" {
+		t.Fatal(p)
+	}
+	if config.Get().Brain.LiveNoPrompt {
+		t.Error("the box was not cleared by saving without it")
+	}
+}

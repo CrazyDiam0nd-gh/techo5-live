@@ -69,6 +69,8 @@ func brainSection(w http.ResponseWriter, token string) {
 	  conversation ends. Sound from the speaker can be mistaken for you, so it works best at a lower volume. %s</p>
 	 <label for="livevoice">Live voice: the model's voice</label>
 	 <select id="livevoice" name="live_voice">%s</select>
+	 <p><label><input type="checkbox" name="live_no_prompt" value="yes" style="width:auto"%s> Live voice: ignore &ldquo;Anything the
+	  assistant should know&rdquo; below (to hear the model without its persona)</label></p>
 	 <label for="livemodel">Live voice: model (leave empty for %s)</label>
 	 <input id="livemodel" name="live_model" value="%s" autocomplete="off">
 	 <label for="livebackend">Live voice: the model that does the thinking and the tools (leave empty for %s)</label>
@@ -98,7 +100,7 @@ func brainSection(w http.ResponseWriter, token string) {
 		selected(b.Mode == config.BrainHomeAssistant), selected(b.Mode == config.BrainDirect), selected(b.Mode == config.BrainRealtime),
 		selected(b.Mode == config.BrainLive),
 		config.DefaultRealtimeModel, houseNote(), houseNote(),
-		liveVoiceOptions(b.LiveVoice),
+		liveVoiceOptions(b.LiveVoice), checkedIf(b.LiveNoPrompt),
 		live.DefaultModel, html.EscapeString(b.LiveModel), live.DefaultBackend, html.EscapeString(b.LiveBackend),
 		html.EscapeString(b.STT), html.EscapeString(b.TTS), html.EscapeString(b.Voice), html.EscapeString(b.Language),
 		html.EscapeString(b.LLM), html.EscapeString(b.Model), keyHint(b.Key != ""), html.EscapeString(b.Search),
@@ -155,9 +157,10 @@ func saveBrain(r *http.Request) string {
 		Search:   strings.TrimRight(v("search"), "/"),
 		Prompt:   strings.TrimSpace(r.PostFormValue("prompt")),
 
-		LiveVoice:   v("live_voice"),
-		LiveModel:   v("live_model"),
-		LiveBackend: v("live_backend"),
+		LiveVoice:    v("live_voice"),
+		LiveModel:    v("live_model"),
+		LiveBackend:  v("live_backend"),
+		LiveNoPrompt: r.PostFormValue("live_no_prompt") == "yes",
 	}
 	if b.Mode != config.BrainHomeAssistant && b.Mode != config.BrainDirect && b.Mode != config.BrainRealtime && b.Mode != config.BrainLive {
 		return "that is not a way of answering this device knows"

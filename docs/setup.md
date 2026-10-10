@@ -319,7 +319,10 @@ Set **Answered by** to *Live voice (OpenAI GPT-Live)* and fill in:
 | Key | your OpenAI key (the same field as above). |
 | Live voice | the model's voice. Empty is `marin`. `cedar`, `alloy`, `ash`, `ballad`, `coral`, `echo`, `sage`, `shimmer` and `verse` are offered; they were accepted when tried. The ChatGPT app's other voices (such as `juniper` or `sol`) were refused for the account they were tried on ("Voice session access denied"), so they may not be available through the API. Any name can be typed, and the device says if the server will not use it. |
 | Model, and the model that does the thinking | leave empty for `gpt-live-1` and `gpt-5.6-luna`. |
-| Anything the assistant should know | its manner, or the name and habits of the house. |
+| Anything the assistant should know | its manner, or the name and habits of the house. Tick **ignore "Anything the assistant should know"** to try the model without it (its persona), and untick it to bring it back. |
+
+A change to any of these applies from the next conversation: the device opens a fresh session when the one it
+kept for a follow-up was opened with other settings.
 
 The voice model talks and listens; it hands anything that needs thinking or a tool (the time, timers, the
 house, music, the weather) to a second model, which uses the same tools as the other modes. It says a word

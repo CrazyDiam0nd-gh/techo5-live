@@ -31,7 +31,7 @@ func newFakeLive(t *testing.T) (*fakeLive, string) {
 	t.Helper()
 	f := &fakeLive{t: t, got: make(chan map[string]any, 256), done: make(chan struct{})}
 	ready := make(chan struct{})
-	var once sync.Once
+	var once, doneOnce sync.Once
 	up := websocket.Upgrader{}
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		ws, err := up.Upgrade(w, r, nil)
@@ -41,7 +41,7 @@ func newFakeLive(t *testing.T) (*fakeLive, string) {
 		defer ws.Close()
 		var mu sync.Mutex
 		f.send = func(v any) { mu.Lock(); defer mu.Unlock(); _ = ws.WriteJSON(v) }
-		defer func() { close(f.done) }()
+		defer func() { doneOnce.Do(func() { close(f.done) }) }()
 		for {
 			var m map[string]any
 			if ws.ReadJSON(&m) != nil {
@@ -113,7 +113,9 @@ func liveSetup(t *testing.T, run func(name, args string) string) (*liveBackend, 
 			Run:          run,
 		}
 	}
-	t.Cleanup(func() { liveURL, RealtimeKit = "", oldKit })
+	oldAfter := afterWork
+	afterWork = 0 // tests that look at the wait for the voice set it themselves
+	t.Cleanup(func() { liveURL, RealtimeKit, afterWork = "", oldKit, oldAfter })
 
 	events := make(chan event, 512)
 	b := newLive(func(e event) { events <- e })
@@ -123,13 +125,20 @@ func liveSetup(t *testing.T, run func(name, args string) string) (*liveBackend, 
 	if err := b.Start(""); err != nil {
 		t.Fatal(err)
 	}
+	waitReady(t, b)
+	return b, events, f
+}
+
+// waitReady waits for the backend's session to be open.
+func waitReady(t *testing.T, b *liveBackend) {
+	t.Helper()
 	deadline := time.After(5 * time.Second)
 	for {
 		b.mu.Lock()
 		ok := b.ready
 		b.mu.Unlock()
 		if ok {
-			break
+			return
 		}
 		select {
 		case <-deadline:
@@ -137,7 +146,6 @@ func liveSetup(t *testing.T, run func(name, args string) string) (*liveBackend, 
 		case <-time.After(5 * time.Millisecond):
 		}
 	}
-	return b, events, f
 }
 
 // waitFor returns the events up to and including the first of kind, or fails.
@@ -476,5 +484,124 @@ func TestQuietFollowUpOnlyForLiveFollowUps(t *testing.T) {
 	}
 	if quietFollowUp(newRealtime(func(event) {}), true) {
 		t.Error("the half-duplex mode lost its follow-up sound")
+	}
+}
+
+// The backend has finished before the voice has said what it found. The reply is kept open for the voice
+// to speak, so the answer is part of it and not lost to a turn that has already ended.
+func TestLiveTheVoiceIsGivenTimeToSayTheResult(t *testing.T) {
+	_, events, f := liveSetup(t, func(name, args string) string { return "off" })
+	afterWork = 400 * time.Millisecond
+	f.heard(" Is the light on", 400)
+	f.send(map[string]any{"type": "session.delegation.created", "delegation": map[string]any{"id": "d"}})
+	f.said(" Checking.", 1500)
+	f.voice(true, 5)
+	f.send(map[string]any{"type": "response.event", "delegation_id": "d", "event": map[string]any{
+		"type": "response.output_item.done", "item": map[string]any{
+			"type": "function_call", "call_id": "c", "name": "get_time", "arguments": "{}"}}})
+	f.send(map[string]any{"type": "response.event", "delegation_id": "d", "event": map[string]any{"type": "response.completed"}})
+	for m := range f.got { // the result goes back
+		if m["type"] == "response.create" {
+			break
+		}
+	}
+	f.send(map[string]any{"type": "response.event", "delegation_id": "d", "event": map[string]any{"type": "response.completed"}})
+	f.voice(false, 20) // two seconds of the voice thinking, by its own clock: more than a pause
+
+	time.Sleep(100 * time.Millisecond)
+	for len(events) > 0 {
+		if e := <-events; e.kind == evStreamEnd {
+			t.Fatal("the reply ended before the voice said the result")
+		}
+	}
+	f.said(" It is off.", 5000)
+	f.voice(true, 6)
+	time.Sleep(500 * time.Millisecond) // the wait for the voice runs out
+	f.voice(false, 14)
+	got := waitFor(t, events, evStreamEnd)
+	if n := samples(got); n < 6*1600-200 {
+		t.Errorf("%d samples after the pause, want the 6 tenths of the answer", n)
+	}
+}
+
+// A voice, a model or the household's text changed on the setup page applies to the next conversation: a
+// session opened before is not reused for it.
+func TestLiveASettingChangeOpensANewSession(t *testing.T) {
+	b, _, f := liveSetup(t, nil)
+	first := f.done
+	if err := b.Stop(); err != nil {
+		t.Fatal(err)
+	}
+	// Nothing changed: the same session is kept.
+	if err := b.Start(""); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-first:
+		t.Fatal("the session was closed with nothing changed")
+	case <-time.After(150 * time.Millisecond):
+	}
+	_ = b.Stop()
+
+	br := config.Get().Brain
+	br.LiveVoice = "coral"
+	if err := config.Set().Brain().Set(br); err != nil {
+		t.Fatal(err)
+	}
+	if err := b.Start(""); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-first:
+	case <-time.After(3 * time.Second):
+		t.Fatal("the old session stayed open after the voice was changed")
+	}
+	waitReady(t, b) // and the new one opens before this test's settings are put back
+}
+
+func TestLiveSettingsAreWhatASessionIsOpenedWith(t *testing.T) {
+	config.Use(filepath.Join(t.TempDir(), "state.json"))
+	base := config.Brain{Mode: config.BrainLive, LiveVoice: "marin", Prompt: "a"}
+	set := func(b config.Brain) string {
+		_ = config.Set().Brain().Set(b)
+		return liveSettings()
+	}
+	was := set(base)
+	for name, mutate := range map[string]func(*config.Brain){
+		"voice":   func(b *config.Brain) { b.LiveVoice = "cedar" },
+		"model":   func(b *config.Brain) { b.LiveModel = "x" },
+		"backend": func(b *config.Brain) { b.LiveBackend = "y" },
+		"prompt":  func(b *config.Brain) { b.Prompt = "b" },
+		"persona": func(b *config.Brain) { b.LiveNoPrompt = true },
+	} {
+		b := base
+		mutate(&b)
+		if set(b) == was {
+			t.Errorf("changing the %s does not change the settings", name)
+		}
+	}
+	if set(base) != was {
+		t.Error("the same settings differ")
+	}
+}
+
+// With the household's text switched off the voice is told the device's rules and not the persona.
+func TestLiveCanLeaveOutThePersona(t *testing.T) {
+	config.Use(filepath.Join(t.TempDir(), "state.json"))
+	k := Kit{
+		Instructions: func(time.Time) string { return "RULES and PERSONA" },
+		Base:         func(time.Time) string { return "RULES" },
+	}
+	_ = config.Set().Brain().Set(config.Brain{Mode: config.BrainLive})
+	if s := instructionsForLive(k); !strings.Contains(s, "PERSONA") {
+		t.Error("the persona is missing by default")
+	}
+	_ = config.Set().Brain().Set(config.Brain{Mode: config.BrainLive, LiveNoPrompt: true})
+	if s := instructionsForLive(k); strings.Contains(s, "PERSONA") || !strings.Contains(s, "RULES") {
+		t.Errorf("switched off: %q", s[:40])
+	}
+	k.Base = nil // nothing to fall back to: the full instructions, not none
+	if s := instructionsForLive(k); !strings.Contains(s, "RULES") {
+		t.Error("no instructions at all without a Base")
 	}
 }

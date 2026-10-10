@@ -29,7 +29,10 @@ import (
 // cannot be imported by it: what to tell the model, what it may do, and how to do it.
 type Kit struct {
 	Instructions func(now time.Time) string
-	Tools        []realtime.Tool
+	// Base is Instructions without the household's own text (the persona), for trying a model without it.
+	// Nil where there is no difference.
+	Base  func(now time.Time) string
+	Tools []realtime.Tool
 	// Run does one tool call and returns what happened, in words for the model.
 	Run func(name, arguments string) string
 	// Tidy makes the model's text fit for speech.

@@ -46,6 +46,15 @@ func kit() voice.Kit {
 			}
 			return s
 		},
+		Base: func(now time.Time) string {
+			b := config.Get().Brain
+			b.Prompt = ""
+			s := instructions(b, now)
+			if home := homeGuidance(); home != "" {
+				s += "\n\n" + home
+			}
+			return s
+		},
 		Tools: rt,
 		Run: func(name, arguments string) string {
 			var call llm.ToolCall

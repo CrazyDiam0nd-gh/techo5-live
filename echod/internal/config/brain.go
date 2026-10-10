@@ -32,6 +32,8 @@ type Brain struct {
 	LiveVoice   string `json:"live_voice,omitempty"`
 	LiveModel   string `json:"live_model,omitempty"`
 	LiveBackend string `json:"live_backend,omitempty"`
+	// LiveNoPrompt leaves Prompt out of the live model's instructions, to hear it without the persona.
+	LiveNoPrompt bool `json:"live_no_prompt,omitempty"`
 
 	// Prompt is added to the device's own instructions to the model: a name, a tone, what the
 	// household wants it to know.

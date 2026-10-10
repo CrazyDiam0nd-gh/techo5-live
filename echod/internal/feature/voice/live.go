@@ -53,6 +53,7 @@ type liveBackend struct {
 	ready    bool
 	opening  bool
 	openedAt time.Time
+	openWith string // the settings the session was opened with
 	pending  []byte // microphone audio from while it opened
 	active   bool
 	closer   *time.Timer
@@ -66,6 +67,7 @@ type liveBackend struct {
 	heard       strings.Builder // what the person said
 	said        strings.Builder // what the model said, as text
 	heardPosted bool
+	heardEndMs  int       // where the person's last word ended on the session's clock
 	speaking    bool      // voiced audio is flowing
 	silentMs    int       // the pause so far inside a reply
 	held        [][]int16 // the pause, kept back in case speech resumes (at 16 kHz)
@@ -98,7 +100,11 @@ func (b *liveBackend) Ready() bool      { return config.Get().Brain.Live() && Re
 // hand a request to the backend that has the tools, which requests those are.
 func instructionsForLive(k Kit) string {
 	var sb strings.Builder
-	sb.WriteString(k.Instructions(time.Now()))
+	if config.Get().Brain.LiveNoPrompt && k.Base != nil {
+		sb.WriteString(k.Base(time.Now()))
+	} else {
+		sb.WriteString(k.Instructions(time.Now()))
+	}
 	sb.WriteString("\n\nYou are talking with someone out loud, in real time, and they may interrupt you. " +
 		"Keep replies to one or two short spoken sentences. Never use lists or markdown. " +
 		"Delegate to the backend whenever the request is about the current time or date, timers, alarms, " +
@@ -144,6 +150,11 @@ func (b *liveBackend) Start(string) error {
 		b.cl.Close()
 		b.cl, b.ready = nil, false
 	}
+	if b.cl != nil && b.ready && b.openWith != liveSettings() {
+		slog.Info("live: the settings changed, opening a new session")
+		b.cl.Close()
+		b.cl, b.ready = nil, false
+	}
 	if b.cl != nil && b.ready && RealtimeKit != nil && len(RealtimeKit().Tools) != len(b.kit.Tools) {
 		slog.Info("live: the tools changed, opening a new session")
 		b.cl.Close()
@@ -173,7 +184,9 @@ func (b *liveBackend) newTurn() {
 
 func (b *liveBackend) open() {
 	br := config.Get().Brain
+	settings := liveSettings()
 	kit := RealtimeKit()
+	opening := time.Now()
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 	var tools []live.Tool
@@ -191,11 +204,12 @@ func (b *liveBackend) open() {
 		b.post(event{kind: evError, code: "live-connect", msg: err.Error()})
 		return
 	}
-	b.cl, b.ready, b.kit, b.openedAt = cl, true, kit, time.Now()
+	b.cl, b.ready, b.kit, b.openedAt, b.openWith = cl, true, kit, time.Now(), settings
 	held := b.pending
 	b.pending = nil
 	b.mu.Unlock()
-	slog.Info("live: session open", "held_ms", len(held)/32)
+	slog.Info("live: session open", "took_ms", time.Since(opening).Milliseconds(), "held_ms", len(held)/32,
+		"voice", br.LiveVoice, "persona", !br.LiveNoPrompt)
 	if len(held) > 0 {
 		b.micMu.Lock()
 		out := b.mic.Push(live.PCM16(held))
@@ -205,8 +219,21 @@ func (b *liveBackend) open() {
 	safe.Go("live events", func() { b.loop(cl) })
 }
 
+// afterWork is how long the voice is given, once the backend has finished, to say what it found: the
+// backend is done before the voice has spoken the result, and a reply that ended in that gap would have
+// its answer cut off.
+var afterWork = 3 * time.Second
+
 // liveURL overrides the API endpoint, for tests.
 var liveURL string
+
+// liveSettings is what a session is opened with, so that one opened with other settings is not reused:
+// the voice, the models and the instructions are fixed when a session starts.
+func liveSettings() string {
+	br := config.Get().Brain
+	return strings.Join([]string{br.LiveVoice, br.LiveModel, br.LiveBackend, br.Key, br.Prompt,
+		fmt.Sprint(br.LiveNoPrompt)}, "\x00")
+}
 
 // maxLiveHeld bounds the microphone audio held while a session opens: 5 s at 16 kHz.
 const maxLiveHeld = 5 * 16000 * 2
@@ -292,6 +319,8 @@ func (b *liveBackend) handle(cl *live.Client, e live.Event) {
 		b.mu.Lock()
 		if b.replyFrom < 0 {
 			b.replyFrom = e.StartMs
+			// On the session's clock: how long the model took, from the end of your last word to its first.
+			slog.Info("live: the model began to answer", "after_ms", e.StartMs-b.heardEndMs, "words", strings.TrimSpace(e.Delta))
 		}
 		b.said.WriteString(e.Delta)
 		b.mu.Unlock()
@@ -321,7 +350,7 @@ func (b *liveBackend) handle(cl *live.Client, e live.Event) {
 				if b.callInResp {
 					b.callInResp = false // it asked for a tool: the answer comes after the result
 				} else {
-					b.workUntil = time.Time{}
+					b.workUntil = time.Now().Add(afterWork)
 				}
 			}
 		}
@@ -343,6 +372,7 @@ func (b *liveBackend) handle(cl *live.Client, e live.Event) {
 func (b *liveBackend) onHeard(e live.Event) {
 	b.mu.Lock()
 	b.heard.WriteString(e.Delta)
+	b.heardEndMs = max(b.heardEndMs, e.EndMs)
 	talkedOver := b.speaking && b.replyFrom >= 0 && e.StartMs >= b.replyFrom+talkedOverAfter
 	var gen uint64
 	if talkedOver {
