@@ -17,10 +17,34 @@ import (
 	"github.com/HuskerMinion/techo5/echod/internal/feature/home"
 	"github.com/HuskerMinion/techo5/echod/internal/feature/voice"
 	"github.com/HuskerMinion/techo5/echod/internal/lib/llm"
+	"github.com/HuskerMinion/techo5/echod/internal/lib/realtime"
 	"github.com/HuskerMinion/techo5/echod/internal/lib/triggers"
 )
 
-func init() { voice.SetThink(Get().Think) }
+func init() {
+	voice.SetThink(Get().Think)
+	voice.SetRealtimeKit(kit)
+}
+
+// kit is what the realtime pipeline answers with: the same instructions and tools as the direct one,
+// read as a session opens.
+func kit() voice.Kit {
+	ts := tools()
+	rt := make([]realtime.Tool, len(ts))
+	for i, t := range ts {
+		rt[i] = realtime.Tool{Name: t.Name, Description: t.Description, Parameters: t.Parameters}
+	}
+	return voice.Kit{
+		Instructions: func(now time.Time) string { return instructions(config.Get().Brain, now) },
+		Tools:        rt,
+		Run: func(name, arguments string) string {
+			var call llm.ToolCall
+			call.Function.Name, call.Function.Arguments = name, arguments
+			return run(ts, call)
+		},
+		Tidy: spoken,
+	}
+}
 
 // rounds bounds how many times one turn may go back to the model with tool results: a model that
 // keeps asking for tools is not going to stop by being asked once more.

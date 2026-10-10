@@ -92,6 +92,7 @@ const (
 	evSpokeEnd                     // the device heard the speaker finish; text is the turn's id
 	evLookHere                     // the answer put something on the screen: no listening again after it
 	evCutOff                       // another sound took the speaker from the reply (event.reply)
+	evBargeIn                      // the person started talking: whatever is being said is stale (event.gen)
 )
 
 type event struct {
@@ -108,6 +109,11 @@ type event struct {
 	// stopped, or from anything that is not a reply, must not take the turn's deadline away or end
 	// the turn after it.
 	reply uint64
+
+	// gen is which stretch of a realtime conversation the event belongs to. It goes up each time the
+	// person starts talking, and an event from before the latest such time is dropped. Zero is no
+	// generation at all.
+	gen uint64
 }
 
 // conversation runs one turn at a time: microphone audio up, pipeline events back, spoken reply out.
@@ -121,9 +127,13 @@ type conversation struct {
 
 	// ha and direct are the two backends a turn can run against, and be the one the open turn is
 	// running against (backend.go). be is chosen as a turn opens and is only the loop's to change.
-	ha     ha
-	direct *direct
-	be     backend
+	ha       ha
+	direct   *direct
+	realtime *realtimeBackend
+	be       backend
+
+	// minGen is the oldest realtime generation still wanted (event.gen).
+	minGen uint64
 
 	source  *mic.Source
 	speaker *speaker.Player
@@ -229,6 +239,7 @@ func newConversation(vs *esphome.VoiceSatellite) *conversation {
 	}
 	c.ha = ha{vs: vs}
 	c.direct = newDirect(c.post)
+	c.realtime = newRealtime(c.post)
 	c.be = c.ha
 
 	vs.OnPipelineEvent = c.pipeline
@@ -355,6 +366,25 @@ func (c *conversation) handle(e event) {
 			c.think()
 		}
 
+	case evBargeIn:
+		c.minGen = max(c.minGen, e.gen)
+		// Only a reply being made or said can be talked over; at the start of a turn the first words
+		// are just the request.
+		if c.phase != phaseThinking && c.phase != phaseReplying {
+			return
+		}
+		slog.Info("talked over, listening", "was", c.phase, "slot", c.slot+1)
+		c.sound.Silence()
+		c.reply = reply{}
+		c.clearPending()
+		c.player.Sounding(false)
+		c.enter(phaseListening)
+		c.arm(wakeword.MaxListen(c.slot))
+		if effect := wakeword.Effect(c.slot); effect != "" {
+			c.claim.Play(effect, c.ring.Base())
+		}
+		c.turn.Listening()
+
 	case evLookHere:
 		if c.phase != phaseIdle {
 			c.lookHere = true
@@ -395,6 +425,9 @@ func (c *conversation) handle(e event) {
 		}
 
 	case evReplyText:
+		if e.gen != 0 && e.gen < c.minGen {
+			return
+		}
 		slog.Info("replying", "slot", c.slot+1, "text", e.text)
 		c.log.Replied(e.text)
 		c.turn.Replying(e.text)
@@ -430,6 +463,9 @@ func (c *conversation) handle(e event) {
 		c.speak(e.url)
 
 	case evStreamAudio:
+		if e.gen != 0 && e.gen < c.minGen {
+			return
+		}
 		// Retired as soon as a url arrives.
 		if c.phase == phaseIdle || c.reply.url != "" {
 			return
@@ -440,6 +476,9 @@ func (c *conversation) handle(e event) {
 		c.reply.stream.send(e.audio)
 
 	case evStreamEnd:
+		if e.gen != 0 && e.gen < c.minGen {
+			return
+		}
 		// Everything Home Assistant is going to send has been sent. What the errand is still holding
 		// back for the cushion plays, and it finishes once that has been heard.
 		if c.phase == phaseReplying && c.reply.stream != nil {
@@ -463,6 +502,9 @@ func (c *conversation) handle(e event) {
 		}
 
 	case evRunEnd:
+		if e.gen != 0 && e.gen < c.minGen {
+			return
+		}
 		// While idle this is the stopped run closing, which is what a held-back turn is waiting for.
 		if c.phase == phaseIdle {
 			c.startPending()
@@ -681,7 +723,9 @@ func (c *conversation) listenFor(n nextTurn) time.Duration {
 // think stops sending audio. The same animation turned around says the device has stopped listening
 // and is waiting on an answer, which is a different thing to be doing and looks like one.
 func (c *conversation) think() {
-	c.stopStreaming()
+	if !c.keepsListening() {
+		c.stopStreaming()
+	}
 	c.enter(phaseThinking)
 	c.arm(wakeword.MaxThink(c.slot))
 
@@ -694,7 +738,9 @@ func (c *conversation) think() {
 // still downloading is abandoned rather than arriving to play into a canceled turn, and a stream
 // still receiving stops taking chunks.
 func (c *conversation) speak(url string) {
-	c.stopStreaming()
+	if !c.keepsListening() {
+		c.stopStreaming()
+	}
 	c.enter(phaseReplying)
 	c.replies++
 	id := c.replies
@@ -967,6 +1013,13 @@ func (c *conversation) startAudio(slot int, followUp bool) {
 	safe.Go("turn audio", func() { c.stream(ctx, be, slot, followUp, id) })
 }
 
+// keepsListening is whether the open turn's backend wants the microphone kept open while it thinks and
+// speaks, so that talking over it is heard. The turn's end still closes it.
+func (c *conversation) keepsListening() bool {
+	k, ok := c.be.(continuous)
+	return ok && k.Continuous()
+}
+
 func (c *conversation) stopStreaming() {
 	if c.stopAudio == nil {
 		return
@@ -1008,7 +1061,9 @@ func (c *conversation) stream(ctx context.Context, be backend, slot int, followU
 	// The direct pipeline has nobody else to decide, so there it acts every time, follow-ups too:
 	// without it a follow-up would run to its limit and then be dropped as nothing said.
 	_, isDirect := be.(*direct)
-	acts := isDirect || (!followUp && !config.Get().Microphone.PipelineEnds)
+	_, isRealtime := be.(*realtimeBackend)
+	// The realtime model finds the end of the sentence itself, so this detector only logs there.
+	acts := isDirect || (!isRealtime && !followUp && !config.Get().Microphone.PipelineEnds)
 	ep := endpoint.New(endpoint.Default)
 	var sent int
 	var endpointAt float64

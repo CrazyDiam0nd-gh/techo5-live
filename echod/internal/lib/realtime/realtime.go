@@ -38,6 +38,10 @@ type Config struct {
 	Tools        []Tool
 	// VAD is the turn_detection object. Nil means semantic_vad with the defaults.
 	VAD map[string]any
+	// Transcribe is the model that writes down what was heard, for the log and the screen; empty for
+	// none. The model hears the audio itself either way.
+	Transcribe string
+	Language   string
 	// URL overrides the endpoint, for tests.
 	URL string
 }
@@ -122,6 +126,13 @@ func Dial(ctx context.Context, cfg Config) (*Client, error) {
 			"turn_detection": vad,
 		}},
 	}
+	if cfg.Transcribe != "" {
+		tr := map[string]any{"model": cfg.Transcribe}
+		if cfg.Language != "" {
+			tr["language"] = cfg.Language
+		}
+		session["audio"].(map[string]any)["input"].(map[string]any)["transcription"] = tr
+	}
 	if len(tools) > 0 {
 		session["tools"] = tools
 		session["tool_choice"] = "auto"
@@ -171,6 +182,17 @@ func (c *Client) Send(v any) error {
 func (c *Client) Audio(pcm24 []byte) error {
 	return c.Send(map[string]any{"type": "input_audio_buffer.append",
 		"audio": base64.StdEncoding.EncodeToString(pcm24)})
+}
+
+// Update changes the instructions of a session that is open, as the date and time move on.
+func (c *Client) Update(instructions string) error {
+	return c.Send(map[string]any{"type": "session.update", "session": map[string]any{
+		"type": "realtime", "instructions": instructions}})
+}
+
+// ClearAudio throws away input audio the server has buffered and not yet used.
+func (c *Client) ClearAudio() error {
+	return c.Send(map[string]any{"type": "input_audio_buffer.clear"})
 }
 
 // Cancel stops the response being generated, if any.

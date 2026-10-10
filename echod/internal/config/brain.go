@@ -37,11 +37,24 @@ type BrainMode string
 const (
 	BrainHomeAssistant BrainMode = ""
 	BrainDirect        BrainMode = "direct"
+
+	// BrainRealtime is OpenAI's Realtime API: it hears the microphone itself, so it needs no speech to
+	// text server, and its text is spoken by the text-to-speech server so the device keeps its voice.
+	// Model is a realtime model here (gpt-realtime-2.1-mini when empty), Key the OpenAI key.
+	BrainRealtime BrainMode = "realtime"
 )
+
+// DefaultRealtimeModel is what the realtime pipeline asks for when none is set.
+const DefaultRealtimeModel = "gpt-realtime-2.1-mini"
 
 // Direct is whether turns go to the direct pipeline, and it is set up enough to run one.
 func (b Brain) Direct() bool {
 	return b.Mode == BrainDirect && b.STT != "" && b.TTS != "" && b.LLM != ""
+}
+
+// Realtime is whether turns go to the realtime pipeline, and it is set up enough to run one.
+func (b Brain) Realtime() bool {
+	return b.Mode == BrainRealtime && b.TTS != "" && b.Key != ""
 }
 
 type BrainWriter struct{ st *Store }
