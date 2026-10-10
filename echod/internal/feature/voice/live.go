@@ -67,14 +67,15 @@ type liveBackend struct {
 	heard       strings.Builder // what the person said
 	said        strings.Builder // what the model said, as text
 	heardPosted bool
-	heardEndMs  int       // where the person's last word ended on the session's clock
-	sentMs      int       // how much microphone audio the session has been sent: the same clock
-	replyInMs   int       // sentMs when the model began to answer; -1 before
-	speaking    bool      // voiced audio is flowing
-	silentMs    int       // the pause so far inside a reply
-	held        [][]int16 // the pause, kept back in case speech resumes (at 16 kHz)
-	dropping    bool      // the tail of a reply that was talked over: dropped until it goes quiet
-	replyFrom   int       // the model's clock when it began to speak, in ms; -1 before it has
+	heardEndMs  int             // where the person's last word ended on the session's clock
+	sentMs      int             // how much microphone audio the session has been sent: the same clock
+	replyInMs   int             // sentMs when the model began to answer; -1 before
+	overlap     strings.Builder // what the person has said since the model began to speak
+	speaking    bool            // voiced audio is flowing
+	silentMs    int             // the pause so far inside a reply
+	held        [][]int16       // the pause, kept back in case speech resumes (at 16 kHz)
+	dropping    bool            // the tail of a reply that was talked over: dropped until it goes quiet
+	replyFrom   int             // the model's clock when it began to speak, in ms; -1 before it has
 	// The backend is working while a tool runs, and for a few seconds after it last did anything:
 	// the model is silent while it waits, and that is not the end of what it has to say. It has
 	// finished when a response completes that asked for no tool; one that asked for a tool completes
@@ -387,7 +388,14 @@ func (b *liveBackend) onHeard(e live.Event) {
 	b.mu.Lock()
 	b.heard.WriteString(e.Delta)
 	b.heardEndMs = max(b.heardEndMs, e.EndMs)
-	talkedOver := b.speaking && b.replyInMs >= 0 && e.StartMs >= b.replyInMs+talkedOverAfter
+	// Words that begin after the model began to speak are said over it; but a murmur of agreement is not
+	// a reason for it to stop, and the model, hearing one, goes on. Only a real word counts.
+	over := b.speaking && b.replyInMs >= 0 && e.StartMs >= b.replyInMs+talkedOverAfter
+	talkedOver := false
+	if over {
+		b.overlap.WriteString(e.Delta)
+		talkedOver = realWords(b.overlap.String())
+	}
 	var gen uint64
 	if talkedOver {
 		b.gen++
@@ -395,7 +403,8 @@ func (b *liveBackend) onHeard(e live.Event) {
 		b.speaking, b.dropping, b.held = false, true, nil
 		b.said.Reset()
 		b.heard.Reset()
-		b.heard.WriteString(e.Delta)
+		b.heard.WriteString(b.overlap.String())
+		b.overlap.Reset()
 		b.heardPosted, b.replyFrom, b.replyInMs = false, -1, -1
 		b.workUntil, b.callInResp = time.Time{}, false
 		b.res.Reset()
@@ -457,6 +466,7 @@ func (b *liveBackend) onVoice(samples []int16) {
 	if ended {
 		said = strings.TrimSpace(b.said.String())
 		b.speaking, b.held, b.silentMs, b.replyFrom, b.replyInMs = false, nil, 0, -1, -1
+		b.overlap.Reset()
 		b.said.Reset()
 		b.heard.Reset()
 		b.heardPosted = false
@@ -504,4 +514,24 @@ func (b *liveBackend) runTool(cl *live.Client, call live.Call) {
 			b.post(event{kind: evError, code: "live", msg: err.Error()})
 		}
 	})
+}
+
+// backchannels are the sounds and short words people make to say they are listening, which are not
+// an attempt to take the turn.
+var backchannels = map[string]bool{
+	"mm": true, "mmm": true, "mhm": true, "mmhm": true, "hm": true, "hmm": true, "uh": true, "um": true, "huh": true,
+	"ah": true, "oh": true, "yeah": true, "yep": true, "yes": true, "ok": true, "okay": true, "right": true,
+	"sure": true, "alright": true, "cool": true, "nice": true, "wow": true, "great": true, "aha": true,
+}
+
+// realWords is whether what was said over the model holds anything but backchannel.
+func realWords(s string) bool {
+	for _, w := range strings.FieldsFunc(strings.ToLower(s), func(r rune) bool {
+		return !(r >= 'a' && r <= 'z') && !(r >= '0' && r <= '9') && r != '\''
+	}) {
+		if !backchannels[w] {
+			return true
+		}
+	}
+	return false
 }

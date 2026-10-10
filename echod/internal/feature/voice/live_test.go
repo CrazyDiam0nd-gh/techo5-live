@@ -629,3 +629,39 @@ func TestLiveInstructionsAskForNoFiller(t *testing.T) {
 		t.Errorf("the instructions about filler: %s", s)
 	}
 }
+
+// A murmur of agreement said over the model is not an interruption: the model goes on, and so does its
+// voice. A real word after it is.
+func TestLiveABackchannelIsNotAnInterruption(t *testing.T) {
+	b, events, f := liveSetup(t, nil)
+	f.heard(" Tell me a story", 400)
+	feed(t, b, 2000)
+	f.said(" Once", 120000)
+	f.voice(true, 5)
+	f.heard(" Mm", 4000) // after the model began
+	f.heard(" yeah", 4300)
+	f.voice(true, 3)
+	waitFor(t, events, evStreamAudio)
+	time.Sleep(150 * time.Millisecond)
+	for len(events) > 0 {
+		if e := <-events; e.kind == evBargeIn {
+			t.Fatal("a backchannel was taken for talking over")
+		}
+	}
+	f.heard(" actually", 5000) // a real word
+	got := waitFor(t, events, evBargeIn)
+	if got[len(got)-1].gen == 0 {
+		t.Error("the barge-in has no generation")
+	}
+}
+
+func TestRealWords(t *testing.T) {
+	for s, want := range map[string]bool{
+		"": false, " Mm": false, " Mm-hm.": false, " uh huh": false, " Yeah, okay": false, "OK!": false, " mmm yeah right": false,
+		" stop": true, " Mm, actually": true, " no": true, " 5": true, " don't": true,
+	} {
+		if got := realWords(s); got != want {
+			t.Errorf("realWords(%q) = %v, want %v", s, got, want)
+		}
+	}
+}
