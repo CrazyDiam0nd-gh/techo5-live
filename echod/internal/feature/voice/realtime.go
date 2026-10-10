@@ -147,7 +147,8 @@ func (b *realtimeBackend) Start(string) error {
 func instructionsFor(k Kit) string {
 	return k.Instructions(time.Now()) + "\n\nYou are talking with someone out loud, in real time, and they may interrupt you. " +
 		"Reply in text only, in short spoken sentences. " +
-		"Do not say anything before using a tool: speak once, after you have its result. " +
+		"Before using a tool say nothing, or at most the single word Working. After the result, say it in one short sentence " +
+		"and stop: do not describe what you are about to do, do not repeat what a tool reported, and do not add praise. " +
 		"Counting aloud, spelling, reciting and saying things are answers to speak, not timers or alarms. " +
 		"If what you heard is only noise, a fragment, or not meant for you, reply with exactly the word " + quiet +
 		" and nothing else: that overrides any instruction to ask people to repeat or restate."
