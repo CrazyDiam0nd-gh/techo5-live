@@ -27,6 +27,12 @@ type Brain struct {
 	// model looks things up there and reads the pages it finds. Empty is no looking anything up.
 	Search string `json:"search,omitempty"`
 
+	// LiveVoice, LiveModel and LiveBackend are for BrainLive: the model's own voice (marin when empty),
+	// the live model (gpt-live-1) and the model it hands the thinking and the tools to (see lib/live).
+	LiveVoice   string `json:"live_voice,omitempty"`
+	LiveModel   string `json:"live_model,omitempty"`
+	LiveBackend string `json:"live_backend,omitempty"`
+
 	// Prompt is added to the device's own instructions to the model: a name, a tone, what the
 	// household wants it to know.
 	Prompt string `json:"prompt,omitempty"`
@@ -42,6 +48,11 @@ const (
 	// text server, and its text is spoken by the text-to-speech server so the device keeps its voice.
 	// Model is a realtime model here (gpt-realtime-2.1-mini when empty), Key the OpenAI key.
 	BrainRealtime BrainMode = "realtime"
+
+	// BrainLive is OpenAI's Live API (gpt-live-1): full duplex, in the model's own voice, so it needs
+	// no text-to-speech server and no speech to text. Key is the OpenAI key. It bills for the time a
+	// session is open, which the device keeps short.
+	BrainLive BrainMode = "live"
 )
 
 // DefaultRealtimeModel is what the realtime pipeline asks for when none is set.
@@ -55,6 +66,11 @@ func (b Brain) Direct() bool {
 // Realtime is whether turns go to the realtime pipeline, and it is set up enough to run one.
 func (b Brain) Realtime() bool {
 	return b.Mode == BrainRealtime && b.TTS != "" && b.Key != ""
+}
+
+// Live is whether turns go to the live pipeline, and it is set up enough to run one.
+func (b Brain) Live() bool {
+	return b.Mode == BrainLive && b.Key != ""
 }
 
 type BrainWriter struct{ st *Store }

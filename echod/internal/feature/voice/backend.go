@@ -40,6 +40,9 @@ func (h ha) Name() string              { return "home assistant" }
 // backendFor is which one a new turn runs against: the direct pipeline when it is chosen and set up,
 // Home Assistant otherwise.
 func (c *conversation) backendFor() backend {
+	if config.Get().Brain.Live() && c.live.Ready() {
+		return c.live
+	}
 	if config.Get().Brain.Realtime() && c.realtime.Ready() {
 		return c.realtime
 	}

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"math"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -200,5 +201,50 @@ func TestMuteAndInstructions(t *testing.T) {
 		if m := f.next(); m["type"] != want {
 			t.Errorf("sent %v, want %s", m["type"], want)
 		}
+	}
+}
+
+// A stream converted in chunks is the stream converted whole: no click at the joins, and the length
+// follows the ratio.
+func TestTheResamplerCarriesItsPlaceAcrossChunks(t *testing.T) {
+	sine := make([]int16, 24000)
+	for i := range sine {
+		sine[i] = int16(10000 * math.Sin(2*math.Pi*440*float64(i)/24000))
+	}
+	whole := NewResampler(24000, 16000).Push(sine)
+	r := NewResampler(24000, 16000)
+	var chunked []int16
+	for i := 0; i < len(sine); i += 2400 {
+		chunked = append(chunked, r.Push(sine[i:i+2400])...)
+	}
+	if len(whole) < 15990 || len(whole) > 16000 {
+		t.Errorf("a second of 24 kHz became %d samples at 16 kHz", len(whole))
+	}
+	if len(chunked) != len(whole) {
+		t.Fatalf("chunked %d, whole %d", len(chunked), len(whole))
+	}
+	for i := range whole {
+		if whole[i] != chunked[i] {
+			t.Fatalf("sample %d differs: %d against %d", i, chunked[i], whole[i])
+		}
+	}
+	// And it is still a sine of the same pitch: the largest step between samples stays small.
+	for i := 1; i < len(chunked); i++ {
+		if d := int(chunked[i]) - int(chunked[i-1]); d > 1800 || d < -1800 {
+			t.Fatalf("a jump of %d at %d", d, i)
+		}
+	}
+}
+
+func TestPCMAndRMS(t *testing.T) {
+	s := []int16{0, 1000, -1000, 32767, -32768}
+	if got := PCM16(Bytes(s)); len(got) != len(s) || got[3] != 32767 || got[4] != -32768 || got[2] != -1000 {
+		t.Errorf("round trip: %v", got)
+	}
+	if RMS(nil) != 0 || RMS([]int16{0, 0, 0}) != 0 {
+		t.Error("silence is not zero")
+	}
+	if r := RMS([]int16{1000, -1000, 1000, -1000}); r != 1000 {
+		t.Errorf("rms %v", r)
 	}
 }

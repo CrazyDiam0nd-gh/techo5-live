@@ -114,3 +114,75 @@ func TestTheFormOffersLiveConversationAndHidesTheKey(t *testing.T) {
 		t.Error("the form prints the key")
 	}
 }
+
+func TestLiveVoiceIsSavedWithOnlyAKey(t *testing.T) {
+	freshConfig(t)
+	problem := saveBrain(formPost(url.Values{"mode": {"live"}, "key": {"sk-test-key"}, "live_voice": {"cedar"},
+		"live_model": {""}, "live_backend": {"gpt-5.6-luna"}}))
+	if problem != "" {
+		t.Fatalf("refused: %s", problem)
+	}
+	b := config.Get().Brain
+	if !b.Live() || b.Realtime() || b.Direct() || b.LiveVoice != "cedar" || b.LiveBackend != "gpt-5.6-luna" || b.LiveModel != "" {
+		t.Errorf("kept %+v", b)
+	}
+}
+
+func TestLiveVoiceNeedsAKeyAndKeepsTheOne(t *testing.T) {
+	freshConfig(t)
+	if p := saveBrain(formPost(url.Values{"mode": {"live"}})); p == "" {
+		t.Error("took live voice with no key")
+	}
+	if config.Get().Brain.Mode == config.BrainLive {
+		t.Error("kept a setting it refused")
+	}
+	if p := saveBrain(formPost(url.Values{"mode": {"live"}, "key": {"sk-one"}})); p != "" {
+		t.Fatal(p)
+	}
+	// Saving again with the key box empty keeps it; asking to remove it is refused in this mode.
+	if p := saveBrain(formPost(url.Values{"mode": {"live"}, "live_voice": {"marin"}})); p != "" {
+		t.Fatalf("saving with the key box empty: %s", p)
+	}
+	if config.Get().Brain.Key != "sk-one" {
+		t.Errorf("key is %q", config.Get().Brain.Key)
+	}
+	if p := saveBrain(formPost(url.Values{"mode": {"live"}, "nokey": {"yes"}})); p == "" {
+		t.Error("removed the key from live voice")
+	}
+}
+
+func TestLiveVoiceFieldsAreOneLineAndTheFormOffersIt(t *testing.T) {
+	freshConfig(t)
+	if p := saveBrain(formPost(url.Values{"mode": {"live"}, "key": {"k"}, "live_voice": {"a\nb"}})); p == "" {
+		t.Error("took a voice of two lines")
+	}
+	if p := saveBrain(formPost(url.Values{"mode": {"live"}, "key": {"k"}, "live_voice": {"ember"}, "live_model": {"gpt-live-1"}})); p != "" {
+		t.Fatal(p)
+	}
+	w := httptest.NewRecorder()
+	brainSection(w, "tok")
+	page := w.Body.String()
+	for _, want := range []string{`value="live" selected`, `name="live_voice" value="ember"`, `<option value="marin">`,
+		`<option value="cedar">`, `name="live_model" value="gpt-live-1"`, "gpt-5.6-luna", "about five cents a minute"} {
+		if !strings.Contains(page, want) {
+			t.Errorf("the form lacks %q", want)
+		}
+	}
+	if strings.Contains(page, "sk-") || strings.Contains(page, `value="k"`) {
+		t.Error("the key is shown")
+	}
+}
+
+// Going back to another mode keeps what was chosen for live voice, and the live fields do not leak
+// into the others.
+func TestLiveVoiceFieldsSurviveAModeChange(t *testing.T) {
+	freshConfig(t)
+	_ = saveBrain(formPost(url.Values{"mode": {"live"}, "key": {"k"}, "live_voice": {"verse"}}))
+	if p := saveBrain(formPost(url.Values{"mode": {""}, "live_voice": {"verse"}})); p != "" {
+		t.Fatal(p)
+	}
+	b := config.Get().Brain
+	if b.Live() || b.LiveVoice != "verse" || b.Key != "k" {
+		t.Errorf("kept %+v", b)
+	}
+}

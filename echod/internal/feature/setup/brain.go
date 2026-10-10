@@ -13,6 +13,7 @@ import (
 	"github.com/HuskerMinion/techo5/echod/internal/config"
 	"github.com/HuskerMinion/techo5/echod/internal/feature/wakeword"
 	"github.com/HuskerMinion/techo5/echod/internal/lib/hass"
+	"github.com/HuskerMinion/techo5/echod/internal/lib/live"
 )
 
 // listeningSection is how long the device listens again after an answer, and how many times in a row:
@@ -52,6 +53,7 @@ func brainSection(w http.ResponseWriter, token string) {
 	  <option value=""%s>Home Assistant (its Assist pipeline)</option>
 	  <option value="direct"%s>Speech and a chat model, directly</option>
 	  <option value="realtime"%s>Live conversation (OpenAI Realtime), which can be interrupted</option>
+	  <option value="live"%s>Live voice (OpenAI GPT-Live), its own voice, both talking at once (experimental)</option>
 	 </select>
 	 <p class="note">Directly, the device needs no Home Assistant: what is said goes to a speech-to-text
 	  server, the words to a chat model that can set timers and alarms, play the radio and call other
@@ -61,6 +63,17 @@ func brainSection(w http.ResponseWriter, token string) {
 	  and writes the answer as it goes; the text-to-speech server below speaks it, in the voice you choose, and
 	  talking over it stops it. It needs a text-to-speech server and an OpenAI key, and nothing else of the
 	  fields below except the model (a realtime model; empty is %s) and the extra instructions. %s</p>
+	 <p class="note">Live voice is OpenAI's full-duplex model: it listens while it talks, answers in one of its own
+	  voices (not the text-to-speech server's) and can be talked over mid-sentence. It needs only an OpenAI key. It is
+	  billed for the time a conversation is open, about five cents a minute, and the device closes it soon after the
+	  conversation ends. Sound from the speaker can be mistaken for you, so it works best at a lower volume. %s</p>
+	 <label for="livevoice">Live voice: the model's voice</label>
+	 <input id="livevoice" name="live_voice" value="%s" placeholder="%s" list="livevoices" autocomplete="off">
+	 <datalist id="livevoices">%s</datalist>
+	 <label for="livemodel">Live voice: model (leave empty for %s)</label>
+	 <input id="livemodel" name="live_model" value="%s" autocomplete="off">
+	 <label for="livebackend">Live voice: the model that does the thinking and the tools (leave empty for %s)</label>
+	 <input id="livebackend" name="live_backend" value="%s" autocomplete="off">
 	 <label for="stt">Speech to text (host:port)</label>
 	 <input id="stt" name="stt" value="%s" placeholder="192.168.1.20:10300" autocomplete="off">
 	 <label for="tts">Text to speech (host:port)</label>
@@ -84,7 +97,10 @@ func brainSection(w http.ResponseWriter, token string) {
 	 <textarea id="prompt" name="prompt" rows="3" maxlength="2000">%s</textarea>
 	 <p><button type="submit">Save</button></p></form></fieldset>`,
 		selected(b.Mode == config.BrainHomeAssistant), selected(b.Mode == config.BrainDirect), selected(b.Mode == config.BrainRealtime),
-		config.DefaultRealtimeModel, houseNote(),
+		selected(b.Mode == config.BrainLive),
+		config.DefaultRealtimeModel, houseNote(), houseNote(),
+		html.EscapeString(b.LiveVoice), live.DefaultVoice, liveVoiceOptions(),
+		live.DefaultModel, html.EscapeString(b.LiveModel), live.DefaultBackend, html.EscapeString(b.LiveBackend),
 		html.EscapeString(b.STT), html.EscapeString(b.TTS), html.EscapeString(b.Voice), html.EscapeString(b.Language),
 		html.EscapeString(b.LLM), html.EscapeString(b.Model), keyHint(b.Key != ""), html.EscapeString(b.Search),
 		html.EscapeString(b.Prompt))
@@ -98,6 +114,15 @@ func houseNote() string {
 		return "The house is connected: it can look at and operate whatever is exposed to Home Assistant's voice assistant."
 	}
 	return "The house is not connected, so it cannot look at or operate devices; Home Assistant gives the device its address and token when it is paired."
+}
+
+// liveVoiceOptions are the voice names offered beside the field.
+func liveVoiceOptions() string {
+	var sb strings.Builder
+	for _, v := range live.Voices {
+		fmt.Fprintf(&sb, `<option value="%s">`, v)
+	}
+	return sb.String()
 }
 
 func keyHint(set bool) string {
@@ -121,8 +146,12 @@ func saveBrain(r *http.Request) string {
 		Model:    v("model"),
 		Search:   strings.TrimRight(v("search"), "/"),
 		Prompt:   strings.TrimSpace(r.PostFormValue("prompt")),
+
+		LiveVoice:   v("live_voice"),
+		LiveModel:   v("live_model"),
+		LiveBackend: v("live_backend"),
 	}
-	if b.Mode != config.BrainHomeAssistant && b.Mode != config.BrainDirect && b.Mode != config.BrainRealtime {
+	if b.Mode != config.BrainHomeAssistant && b.Mode != config.BrainDirect && b.Mode != config.BrainRealtime && b.Mode != config.BrainLive {
 		return "that is not a way of answering this device knows"
 	}
 	for _, hp := range []struct{ what, v string }{{"speech to text", b.STT}, {"text to speech", b.TTS}} {
@@ -156,7 +185,14 @@ func saveBrain(r *http.Request) string {
 			return "live conversation needs a text-to-speech server and a key"
 		}
 	}
-	if strings.ContainsAny(b.Voice+b.Language+b.Model, "\r\n") {
+	if b.Mode == config.BrainLive {
+		haveKey := strings.TrimSpace(r.PostFormValue("key")) != "" ||
+			(config.Get().Brain.Key != "" && r.PostFormValue("nokey") != "yes")
+		if !haveKey {
+			return "live voice needs an OpenAI key"
+		}
+	}
+	if strings.ContainsAny(b.Voice+b.Language+b.Model+b.LiveVoice+b.LiveModel+b.LiveBackend, "\r\n") {
 		return "the voice, language and model are one line each"
 	}
 	if err := config.Set().Brain().Set(b); err != nil {

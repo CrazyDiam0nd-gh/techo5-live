@@ -1,0 +1,397 @@
+package voice
+
+import (
+	"encoding/base64"
+	"math"
+	"net/http"
+	"net/http/httptest"
+	"path/filepath"
+	"strings"
+	"sync"
+	"testing"
+	"time"
+
+	"github.com/gorilla/websocket"
+
+	"github.com/HuskerMinion/techo5/echod/internal/config"
+	"github.com/HuskerMinion/techo5/echod/internal/lib/live"
+	"github.com/HuskerMinion/techo5/echod/internal/lib/realtime"
+)
+
+// fakeLive is a Live server: it starts the session when asked, hands the test a way to send events, and
+// reports what the client sent.
+type fakeLive struct {
+	t    *testing.T
+	send func(v any)
+	got  chan map[string]any
+	done chan struct{}
+}
+
+func newFakeLive(t *testing.T) (*fakeLive, string) {
+	t.Helper()
+	f := &fakeLive{t: t, got: make(chan map[string]any, 256), done: make(chan struct{})}
+	ready := make(chan struct{})
+	var once sync.Once
+	up := websocket.Upgrader{}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		ws, err := up.Upgrade(w, r, nil)
+		if err != nil {
+			return
+		}
+		defer ws.Close()
+		var mu sync.Mutex
+		f.send = func(v any) { mu.Lock(); defer mu.Unlock(); _ = ws.WriteJSON(v) }
+		defer func() { close(f.done) }()
+		for {
+			var m map[string]any
+			if ws.ReadJSON(&m) != nil {
+				return
+			}
+			if m["type"] == "session.start" {
+				f.send(map[string]any{"type": "session.started", "session": map[string]any{"id": "s"}})
+				once.Do(func() { close(ready) })
+			}
+			f.got <- m
+		}
+	}))
+	t.Cleanup(srv.Close)
+	t.Cleanup(func() {
+		select {
+		case <-ready:
+		default:
+			once.Do(func() { close(ready) })
+		}
+	})
+	_ = ready
+	return f, "ws" + strings.TrimPrefix(srv.URL, "http")
+}
+
+// chunk is a tenth of a second of the model's voice at 24 kHz: a tone, or silence.
+func chunk(voiced bool) map[string]any {
+	n := live.SampleRate / 10
+	s := make([]int16, n)
+	if voiced {
+		for i := range s {
+			s[i] = int16(8000 * math.Sin(2*math.Pi*300*float64(i)/live.SampleRate))
+		}
+	}
+	return map[string]any{"type": "session.output_audio.delta", "delta": base64.StdEncoding.EncodeToString(live.Bytes(s))}
+}
+
+func (f *fakeLive) voice(voiced bool, n int) {
+	for range n {
+		f.send(chunk(voiced))
+	}
+}
+
+func (f *fakeLive) heard(word string, startMs int) {
+	f.send(map[string]any{"type": "session.input_transcript.delta", "delta": word, "start_ms": startMs, "end_ms": startMs + 200})
+}
+
+func (f *fakeLive) said(word string, startMs int) {
+	f.send(map[string]any{"type": "session.output_transcript.delta", "delta": word, "start_ms": startMs, "end_ms": startMs + 200})
+}
+
+// liveSetup configures the pipeline and returns a started backend with its events, and the server it
+// opened.
+func liveSetup(t *testing.T, run func(name, args string) string) (*liveBackend, chan event, *fakeLive) {
+	t.Helper()
+	f, url := newFakeLive(t)
+	config.Use(filepath.Join(t.TempDir(), "state.json"))
+	if err := config.Set().Brain().Set(config.Brain{Mode: config.BrainLive, LiveVoice: "cedar"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := config.Set().Brain().SetKey("sk-test"); err != nil {
+		t.Fatal(err)
+	}
+	liveURL = url
+	oldKit := RealtimeKit
+	RealtimeKit = func() Kit {
+		return Kit{
+			Instructions: func(time.Time) string { return "be brief" },
+			Tools:        []realtime.Tool{{Name: "get_time", Description: "The time. More words.", Parameters: map[string]any{"type": "object"}}},
+			Run:          run,
+		}
+	}
+	t.Cleanup(func() { liveURL, RealtimeKit = "", oldKit })
+
+	events := make(chan event, 512)
+	b := newLive(func(e event) { events <- e })
+	if !b.Ready() {
+		t.Fatal("not ready")
+	}
+	if err := b.Start(""); err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.After(5 * time.Second)
+	for {
+		b.mu.Lock()
+		ok := b.ready
+		b.mu.Unlock()
+		if ok {
+			break
+		}
+		select {
+		case <-deadline:
+			t.Fatal("the session never opened")
+		case <-time.After(5 * time.Millisecond):
+		}
+	}
+	return b, events, f
+}
+
+// waitFor returns the events up to and including the first of kind, or fails.
+func waitFor(t *testing.T, events chan event, kind eventKind) []event {
+	t.Helper()
+	var got []event
+	deadline := time.After(5 * time.Second)
+	for {
+		select {
+		case e := <-events:
+			got = append(got, e)
+			if e.kind == kind {
+				return got
+			}
+		case <-deadline:
+			t.Fatalf("no event %d; got %+v", kind, got)
+		}
+	}
+}
+
+func countKind(es []event, kind eventKind) (n int) {
+	for _, e := range es {
+		if e.kind == kind {
+			n++
+		}
+	}
+	return
+}
+
+func samples(es []event) (n int) {
+	for _, e := range es {
+		if e.kind == evStreamAudio {
+			n += len(e.audio) / 2
+		}
+	}
+	return
+}
+
+// A question, then an answer: the silence before the voice is not played, the voice is, the silence
+// after it is not, and the turn is reported as heard, replied and ended.
+func TestLiveAnAnswerBecomesATurn(t *testing.T) {
+	b, events, f := liveSetup(t, nil)
+	_ = b
+	f.voice(false, 15) // listening
+	f.heard(" What", 400)
+	f.heard(" time is it", 600)
+	f.said(" It is", 2000)
+	f.said(" three.", 2200)
+	f.voice(true, 8)
+	f.voice(false, 3) // a breath inside the reply
+	f.voice(true, 4)
+	f.voice(false, 14) // and the end of it
+
+	got := waitFor(t, events, evStreamEnd)
+	if first := got[0]; first.kind != evSpeaking && first.kind != evHeard {
+		t.Errorf("the first event was %+v", first)
+	}
+	if countKind(got, evHeard) != 1 {
+		t.Errorf("heard %d times", countKind(got, evHeard))
+	}
+	for _, e := range got {
+		if e.kind == evHeard && e.text != "What time is it" {
+			t.Errorf("heard %q", e.text)
+		}
+		if e.kind == evReplyText && e.text != "It is three." {
+			t.Errorf("replied %q", e.text)
+		}
+	}
+	// 12 voiced tenths and a breath of 3 between them, at 16 kHz; not the 15 before or 14 after.
+	want := 15 * 1600
+	if n := samples(got); n < want-200 || n > want+200 {
+		t.Errorf("%d samples played, want about %d", n, want)
+	}
+	if countKind(got, evReplyText) != 1 {
+		t.Errorf("replied %d times", countKind(got, evReplyText))
+	}
+}
+
+// Words that begin after the model began to speak are talking over it; the last words of the question,
+// which the transcript delivers late, are not. What the model has still to say of the reply that was
+// talked over is dropped until it falls quiet.
+func TestLiveTalkingOverAReply(t *testing.T) {
+	_, events, f := liveSetup(t, nil)
+	f.heard(" Tell me a story", 400)
+	f.said(" Once", 2000)
+	f.voice(true, 5)
+	f.heard(" please", 1500) // a late word of the question: not talking over
+	f.voice(true, 2)
+	got := waitFor(t, events, evStreamAudio) // let the above through
+	_ = got
+	time.Sleep(100 * time.Millisecond)
+	for len(events) > 0 {
+		if e := <-events; e.kind == evBargeIn {
+			t.Fatal("the last words of the question were taken for talking over")
+		}
+	}
+
+	f.heard(" Stop", 3500) // after the model began at 2000
+	got = waitFor(t, events, evBargeIn)
+	bi := got[len(got)-1]
+	if bi.gen == 0 {
+		t.Errorf("barge-in carries generation %d", bi.gen)
+	}
+	f.voice(true, 3) // the tail the model had already sent
+	f.voice(false, 2)
+	f.voice(true, 3) // its answer to the interruption
+	f.said(" Sure.", 4200)
+	f.voice(false, 14)
+	got = waitFor(t, events, evStreamEnd)
+	if n := samples(got); n < 3*1600-200 || n > 3*1600+200 {
+		t.Errorf("%d samples after the barge-in, want the 3 tenths of the new answer", n)
+	}
+	for _, e := range got {
+		if e.kind == evStreamAudio && e.gen != bi.gen {
+			t.Errorf("audio carries generation %d, want %d", e.gen, bi.gen)
+		}
+	}
+}
+
+// A function call is carried out and answered by call id.
+func TestLiveAToolCall(t *testing.T) {
+	var mu sync.Mutex
+	var ran []string
+	_, _, f := liveSetup(t, func(name, args string) string {
+		mu.Lock()
+		defer mu.Unlock()
+		ran = append(ran, name+args)
+		return "3 PM"
+	})
+	f.send(map[string]any{"type": "response.event", "delegation_id": "d1", "event": map[string]any{
+		"type": "response.output_item.done", "item": map[string]any{
+			"type": "function_call", "call_id": "c9", "name": "get_time", "arguments": "{}"}}})
+
+	var item, create bool
+	deadline := time.After(3 * time.Second)
+	for !(item && create) {
+		select {
+		case m := <-f.got:
+			switch m["type"] {
+			case "response.item.create":
+				it, _ := m["item"].(map[string]any)
+				item = it["call_id"] == "c9" && it["output"] == "3 PM"
+			case "response.create":
+				create = true
+			}
+		case <-deadline:
+			t.Fatalf("result not sent (item %v, create %v)", item, create)
+		}
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if len(ran) != 1 || ran[0] != "get_time{}" {
+		t.Errorf("ran %v", ran)
+	}
+}
+
+// While the backend is working, a long pause is not the end of the reply; when it has finished and the
+// voice has gone quiet again, it is.
+func TestLiveWaitsForTheBackend(t *testing.T) {
+	_, events, f := liveSetup(t, nil)
+	f.heard(" Is the door locked", 400)
+	f.send(map[string]any{"type": "session.delegation.created", "delegation": map[string]any{"id": "d"}})
+	f.said(" Checking.", 1500)
+	f.voice(true, 6)
+	f.voice(false, 40) // four seconds of pause while the backend works
+
+	time.Sleep(200 * time.Millisecond)
+	for len(events) > 0 {
+		if e := <-events; e.kind == evStreamEnd {
+			t.Fatal("the reply ended while the backend was working")
+		}
+	}
+	f.send(map[string]any{"type": "response.event", "delegation_id": "d", "event": map[string]any{"type": "response.completed"}})
+	f.said(" It is locked.", 6000)
+	f.voice(true, 8)
+	f.voice(false, 14)
+	got := waitFor(t, events, evStreamEnd)
+	if n := samples(got); n < (8+40)*1600-200 {
+		// the pause between "Checking." and the answer is played, so the answer follows it naturally
+		t.Errorf("%d samples played, want the answer and the pause before it", n)
+	}
+}
+
+// Stopping while the model is talking ends the session, which silences it.
+func TestLiveStopSilencesATalkingModel(t *testing.T) {
+	b, events, f := liveSetup(t, nil)
+	f.heard(" Hello", 400)
+	f.said(" Hi", 1500)
+	f.voice(true, 4)
+	waitFor(t, events, evStreamAudio)
+	if err := b.Stop(); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-f.done:
+	case <-time.After(3 * time.Second):
+		t.Fatal("the session was left open with the model talking")
+	}
+}
+
+// A conversation that ended quietly keeps its session for the follow-up.
+func TestLiveStopKeepsAnIdleSessionForAFollowUp(t *testing.T) {
+	b, _, f := liveSetup(t, nil)
+	if err := b.Stop(); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-f.done:
+		t.Fatal("the session was closed at once")
+	case <-time.After(300 * time.Millisecond):
+	}
+	b.mu.Lock()
+	timer := b.closer
+	b.mu.Unlock()
+	if timer == nil {
+		t.Error("no timer to close it")
+	}
+	timer.Stop()
+}
+
+func TestLiveInstructionsNameTheTools(t *testing.T) {
+	k := Kit{
+		Instructions: func(time.Time) string { return "You are the ship's computer." },
+		Tools: []realtime.Tool{
+			{Name: "home_status", Description: "Look at the state of devices. Takes names."},
+			{Name: "set_timer", Description: strings.Repeat("long ", 80)},
+		},
+	}
+	s := instructionsForLive(k)
+	for _, want := range []string{"You are the ship's computer.", "Delegate to the backend whenever", "Backend tools:",
+		"- home_status: Look at the state of devices", "- set_timer: long"} {
+		if !strings.Contains(s, want) {
+			t.Errorf("the instructions lack %q", want)
+		}
+	}
+	if strings.Contains(s, "Takes names") {
+		t.Error("a tool description ran past its first sentence")
+	}
+	if len(s) > 4000 {
+		t.Errorf("%d characters of instructions", len(s))
+	}
+}
+
+func TestLiveIsChosenOnlyWhenSetUp(t *testing.T) {
+	config.Use(filepath.Join(t.TempDir(), "state.json"))
+	_ = config.Set().Brain().Set(config.Brain{Mode: config.BrainLive})
+	if config.Get().Brain.Live() {
+		t.Error("live with no key")
+	}
+	_ = config.Set().Brain().SetKey("k")
+	if !config.Get().Brain.Live() {
+		t.Error("live with a key is not live")
+	}
+	if config.Get().Brain.Realtime() || config.Get().Brain.Direct() {
+		t.Error("live is also another mode")
+	}
+}

@@ -30,7 +30,13 @@ const SampleRate = 24000
 const (
 	DefaultModel   = "gpt-live-1"
 	DefaultBackend = "gpt-5.6-luna"
+	DefaultVoice   = "marin"
 )
+
+// Voices are the names the page offers. OpenAI's guide names only marin; the rest are those reported for
+// the model and are not confirmed, so the page takes any name and the server says if it does not know it.
+var Voices = []string{"marin", "cedar", "alloy", "ash", "ballad", "coral", "echo", "sage", "shimmer", "verse",
+	"juniper", "breeze", "vale", "ember"}
 
 // Tool is a function the backend model may call; the application runs it.
 type Tool struct {
@@ -58,7 +64,11 @@ type Event struct {
 	Raw  json.RawMessage `json:"-"`
 
 	// Delta is base64 audio in session.output_audio.delta, and text in the transcript deltas.
-	Delta        string `json:"delta"`
+	Delta string `json:"delta"`
+	// StartMs and EndMs place a transcript delta on the session's clock, which is the clock of the audio
+	// sent and received: a word of the person's that starts after the model began to speak is talking over it.
+	StartMs      int    `json:"start_ms"`
+	EndMs        int    `json:"end_ms"`
 	DelegationID string `json:"delegation_id"`
 	Reason       string `json:"reason"`
 

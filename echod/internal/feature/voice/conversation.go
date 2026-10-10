@@ -130,6 +130,7 @@ type conversation struct {
 	ha       ha
 	direct   *direct
 	realtime *realtimeBackend
+	live     *liveBackend
 	be       backend
 
 	// minGen is the oldest realtime generation still wanted (event.gen).
@@ -240,6 +241,7 @@ func newConversation(vs *esphome.VoiceSatellite) *conversation {
 	c.ha = ha{vs: vs}
 	c.direct = newDirect(c.post)
 	c.realtime = newRealtime(c.post)
+	c.live = newLive(c.post)
 	c.be = c.ha
 
 	vs.OnPipelineEvent = c.pipeline
@@ -1090,6 +1092,9 @@ func (c *conversation) stream(ctx context.Context, be backend, slot int, followU
 	// without it a follow-up would run to its limit and then be dropped as nothing said.
 	_, isDirect := be.(*direct)
 	_, isRealtime := be.(*realtimeBackend)
+	if _, isLive := be.(*liveBackend); isLive {
+		isRealtime = true // it too finds the end of the sentence itself
+	}
 	// The realtime model finds the end of the sentence itself, so this detector only logs there.
 	acts := isDirect || (!isRealtime && !followUp && !config.Get().Microphone.PipelineEnds)
 	ep := endpoint.New(endpoint.Default)
@@ -1262,7 +1267,7 @@ func pageAsked(heard string) bool {
 	// Only where Home Assistant's answer is what opens the page: the direct and realtime pipelines answer
 	// in words, and a weather question is no reason not to listen for what comes next.
 	brain := config.Get().Brain
-	return !brain.Direct() && !brain.Realtime() && (triggers.AboutWeather(heard, lang) || triggers.AboutRadar(heard, lang))
+	return !brain.Direct() && !brain.Realtime() && !brain.Live() && (triggers.AboutWeather(heard, lang) || triggers.AboutRadar(heard, lang))
 }
 
 // int16Bytes is samples as 16-bit little-endian bytes.

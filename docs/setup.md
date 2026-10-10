@@ -304,6 +304,38 @@ louder voice or a lower volume.
 until the conversation is over (the follow-up window ending with nothing said). The wake sound can be your
 own recording (see Sounds of your own below).
 
+### Live voice (OpenAI GPT-Live, experimental)
+
+A second kind of live conversation, for those who want to hear OpenAI's own voice and to talk over it
+mid-sentence. **Live conversation** above is *half duplex*: the model writes the answer and a
+text-to-speech server speaks it in a voice you chose. **Live voice** is *full duplex*: the model listens
+while it talks and answers in its own voice, so no text-to-speech server is needed, and the voice is one of
+the model's.
+
+Set **Answered by** to *Live voice (OpenAI GPT-Live)* and fill in:
+
+| Field | What to put |
+|---|---|
+| Key | your OpenAI key (the same field as above). |
+| Live voice | the model's voice. Empty is `marin`; `cedar`, `alloy`, `ash`, `ballad`, `coral`, `echo`, `sage`, `shimmer`, `verse`, `juniper`, `breeze`, `vale` and `ember` are offered, and the server says if one is not available to your account. |
+| Model, and the model that does the thinking | leave empty for `gpt-live-1` and `gpt-5.6-luna`. |
+| Anything the assistant should know | its manner, or the name and habits of the house. |
+
+The voice model talks and listens; it hands anything that needs thinking or a tool (the time, timers, the
+house, music, the weather) to a second model, which uses the same tools as the other modes. It says a word
+such as "Checking" while it waits.
+
+**Cost.** It is billed for the time a session is open, about five cents a minute at the time of writing, plus
+the thinking model's own use. The device opens a session when you say the wake word and closes it about 20
+seconds after the conversation ends, or at once if you stop it while it is talking. A conversation that goes
+on is renewed every few minutes.
+
+**Talking over it.** You are heard while it speaks and it stops when it hears you. The device's own voice is
+in the microphones, though, and the echo canceller does not remove all of it: a loud speaker can make the
+model hear itself and stop. Use a lower volume if it keeps cutting itself off. This is why the mode is
+marked experimental, and why *Live conversation* above, which judges speech against what is playing, remains
+the one to use at a high volume.
+
 ### A wake word of your own
 
 Any microWakeWord model works, from a collection like
