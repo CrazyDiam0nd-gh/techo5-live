@@ -68,8 +68,7 @@ func brainSection(w http.ResponseWriter, token string) {
 	  billed for the time a conversation is open, about five cents a minute, and the device closes it soon after the
 	  conversation ends. Sound from the speaker can be mistaken for you, so it works best at a lower volume. %s</p>
 	 <label for="livevoice">Live voice: the model's voice</label>
-	 <input id="livevoice" name="live_voice" value="%s" placeholder="%s" list="livevoices" autocomplete="off">
-	 <datalist id="livevoices">%s</datalist>
+	 <select id="livevoice" name="live_voice">%s</select>
 	 <label for="livemodel">Live voice: model (leave empty for %s)</label>
 	 <input id="livemodel" name="live_model" value="%s" autocomplete="off">
 	 <label for="livebackend">Live voice: the model that does the thinking and the tools (leave empty for %s)</label>
@@ -99,7 +98,7 @@ func brainSection(w http.ResponseWriter, token string) {
 		selected(b.Mode == config.BrainHomeAssistant), selected(b.Mode == config.BrainDirect), selected(b.Mode == config.BrainRealtime),
 		selected(b.Mode == config.BrainLive),
 		config.DefaultRealtimeModel, houseNote(), houseNote(),
-		html.EscapeString(b.LiveVoice), live.DefaultVoice, liveVoiceOptions(),
+		liveVoiceOptions(b.LiveVoice),
 		live.DefaultModel, html.EscapeString(b.LiveModel), live.DefaultBackend, html.EscapeString(b.LiveBackend),
 		html.EscapeString(b.STT), html.EscapeString(b.TTS), html.EscapeString(b.Voice), html.EscapeString(b.Language),
 		html.EscapeString(b.LLM), html.EscapeString(b.Model), keyHint(b.Key != ""), html.EscapeString(b.Search),
@@ -116,11 +115,20 @@ func houseNote() string {
 	return "The house is not connected, so it cannot look at or operate devices; Home Assistant gives the device its address and token when it is paired."
 }
 
-// liveVoiceOptions are the voice names offered beside the field.
-func liveVoiceOptions() string {
+// liveVoiceOptions are the choices for the model's voice, with the one in force selected. A name that is
+// not in the list (typed in an earlier version, or one the server has since allowed) stays a choice, so
+// opening the page and saving it does not change the voice.
+func liveVoiceOptions(cur string) string {
 	var sb strings.Builder
+	fmt.Fprintf(&sb, `<option value=""%s>Default (%s)</option>`, selected(cur == ""), live.DefaultVoice)
+	known := cur == ""
 	for _, v := range live.Voices {
-		fmt.Fprintf(&sb, `<option value="%s">`, v)
+		known = known || v == cur
+		fmt.Fprintf(&sb, `<option value="%s"%s>%s</option>`, v, selected(v == cur), v)
+	}
+	if !known {
+		fmt.Fprintf(&sb, `<option value="%s" selected>%s (not in the list)</option>`,
+			html.EscapeString(cur), html.EscapeString(cur))
 	}
 	return sb.String()
 }

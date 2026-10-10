@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/HuskerMinion/techo5/echod/internal/config"
+	"github.com/HuskerMinion/techo5/echod/internal/lib/live"
 )
 
 func formPost(v url.Values) *http.Request {
@@ -162,8 +163,10 @@ func TestLiveVoiceFieldsAreOneLineAndTheFormOffersIt(t *testing.T) {
 	w := httptest.NewRecorder()
 	brainSection(w, "tok")
 	page := w.Body.String()
-	for _, want := range []string{`value="live" selected`, `name="live_voice" value="ember"`, `<option value="marin">`,
-		`<option value="cedar">`, `name="live_model" value="gpt-live-1"`, "gpt-5.6-luna", "about five cents a minute"} {
+	for _, want := range []string{`value="live" selected`, `<select id="livevoice" name="live_voice">`,
+		`<option value="marin">marin</option>`, `<option value="cedar">cedar</option>`, `<option value="coral">coral</option>`,
+		`<option value="ember" selected>ember (not in the list)</option>`, `Default (marin)`,
+		`name="live_model" value="gpt-live-1"`, "gpt-5.6-luna", "about five cents a minute"} {
 		if !strings.Contains(page, want) {
 			t.Errorf("the form lacks %q", want)
 		}
@@ -184,5 +187,27 @@ func TestLiveVoiceFieldsSurviveAModeChange(t *testing.T) {
 	b := config.Get().Brain
 	if b.Live() || b.LiveVoice != "verse" || b.Key != "k" {
 		t.Errorf("kept %+v", b)
+	}
+}
+
+// Every voice is a choice whatever is selected (the list does not shrink to the one in force, as a
+// suggestion list does), and the one in force is the one marked.
+func TestTheVoiceListShowsEveryVoiceWhateverIsChosen(t *testing.T) {
+	for _, cur := range []string{"", "coral", "marin", "verse", "<b>x"} {
+		opts := liveVoiceOptions(cur)
+		for _, v := range live.Voices {
+			if !strings.Contains(opts, `value="`+v+`"`) {
+				t.Errorf("with %q chosen, %s is missing", cur, v)
+			}
+		}
+		if got := strings.Count(opts, " selected"); got != 1 {
+			t.Errorf("with %q chosen, %d options are selected", cur, got)
+		}
+		if strings.Contains(opts, "<b>x") {
+			t.Errorf("a custom name was not escaped: %s", opts)
+		}
+	}
+	if !strings.Contains(liveVoiceOptions("coral"), `<option value="coral" selected>coral</option>`) {
+		t.Error("coral is not the selected one")
 	}
 }
