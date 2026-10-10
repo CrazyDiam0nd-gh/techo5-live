@@ -6,7 +6,6 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -69,12 +68,7 @@ func TestTheSoundsPageInARealBrowser(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
-	cmd := exec.CommandContext(ctx, chrome, "--headless=new", "--no-sandbox", "--disable-gpu",
-		"--autoplay-policy=no-user-gesture-required", "--user-data-dir="+t.TempDir(), srv.URL+"/driver")
-	if err := cmd.Start(); err != nil {
-		t.Fatal(err)
-	}
-	defer func() { _ = cmd.Process.Kill(); _ = cmd.Wait() }()
+	startChrome(t, ctx, chrome, srv.URL+"/driver")
 
 	select {
 	case got := <-result:

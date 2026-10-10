@@ -75,6 +75,7 @@ func head(w http.ResponseWriter) {
  fieldset{border:1px solid var(--line);border-radius:10px;margin:0 0 1rem;padding:1rem;min-width:0}
  legend{padding:0 .4rem;color:var(--accent)}
  h3{font-size:.85rem;margin:1.6rem 0 .6rem;color:var(--dimtext);text-transform:uppercase;letter-spacing:.06em} h2+h3{margin-top:.4rem}
+ [hidden]{display:none !important}
  label{display:block;margin:.6rem 0 .2rem;color:var(--dimtext)}
  select,input,textarea{font:inherit;width:100%%;padding:.5rem;border-radius:8px;border:1px solid var(--line);background:var(--field);color:inherit}
  input[type=checkbox],input[type=radio]{width:auto;margin-right:.4rem}

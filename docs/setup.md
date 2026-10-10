@@ -271,7 +271,8 @@ text-to-speech server speaks it in the voice you choose. You can talk over it an
 It also keeps listening for a follow-up, with the **Listening after an answer** settings.
 
 On the setup page (Sound & Voice → Voice assistant), set **Answered by** to *Live conversation (OpenAI
-Realtime)* and fill in:
+Realtime)*. The form shows only the fields that matter to the way chosen; the others are hidden, and what you
+had entered for them is kept. Fill in:
 
 | Field | What to put |
 |---|---|

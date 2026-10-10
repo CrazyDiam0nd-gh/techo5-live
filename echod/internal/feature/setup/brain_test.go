@@ -233,3 +233,96 @@ func TestLiveVoiceCanIgnoreThePersona(t *testing.T) {
 		t.Error("the box was not cleared by saving without it")
 	}
 }
+
+// fieldShown is whether the control with that id is in a part of the form that is not hidden: the part
+// is the nearest block before it that names the ways of answering it belongs to.
+func fieldShown(t *testing.T, page, id string) bool {
+	t.Helper()
+	at := strings.Index(page, `id="`+id+`"`)
+	if at < 0 {
+		t.Fatalf("no field %q on the form", id)
+	}
+	open := strings.LastIndex(page[:at], `<div data-modes="`)
+	if open < 0 {
+		return true // not in a part of its own: always shown
+	}
+	end := strings.Index(page[open:], ">")
+	return !strings.Contains(page[open:open+end], " hidden")
+}
+
+// Each way of answering shows the fields that matter to it and none of the others'.
+func TestEachWayOfAnsweringShowsOnlyItsOwnFields(t *testing.T) {
+	shown := map[string]map[string]bool{ // mode -> the fields shown
+		"":         {},
+		"direct":   {"stt": true, "tts": true, "voice": true, "language": true, "llm": true, "model": true, "key": true, "search": true, "prompt": true},
+		"realtime": {"tts": true, "voice": true, "language": true, "model": true, "key": true, "search": true, "prompt": true},
+		"live":     {"livevoice": true, "livemodel": true, "livebackend": true, "key": true, "search": true, "prompt": true},
+	}
+	every := []string{"stt", "tts", "voice", "language", "llm", "model", "key", "search", "prompt", "livevoice", "livemodel", "livebackend"}
+	for mode, want := range shown {
+		freshConfig(t)
+		_ = config.Set().Brain().Set(config.Brain{Mode: config.BrainMode(mode)})
+		w := httptest.NewRecorder()
+		brainSection(w, "tok")
+		page := w.Body.String()
+		for _, id := range every {
+			if got := fieldShown(t, page, id); got != want[id] {
+				t.Errorf("mode %q: field %s shown = %v, want %v", mode, id, got, want[id])
+			}
+		}
+		if !strings.Contains(page, `<select id="mode"`) || strings.Contains(strings.SplitN(page, `<select id="mode"`, 2)[0], "data-modes") {
+			t.Errorf("mode %q: the choice of way is not always shown", mode)
+		}
+	}
+}
+
+// The model and key fields are labelled for the way chosen, not for all of them at once.
+func TestTheModelAndKeyAreLabelledForTheWayChosen(t *testing.T) {
+	for mode, want := range map[string][]string{
+		"live":     {"Your OpenAI key"},
+		"realtime": {"Your OpenAI key", "Realtime model"},
+		"direct":   {"Chat model (only if the server has several)", "Key for the chat endpoint"},
+	} {
+		freshConfig(t)
+		_ = config.Set().Brain().Set(config.Brain{Mode: config.BrainMode(mode)})
+		w := httptest.NewRecorder()
+		brainSection(w, "tok")
+		page := w.Body.String()
+		for _, text := range want {
+			at := strings.Index(page, text)
+			if at < 0 {
+				t.Fatalf("mode %s: no %q", mode, text)
+			}
+			open := strings.LastIndex(page[:at], "<span")
+			if tag := page[open : open+strings.Index(page[open:], ">")]; strings.Contains(tag, " hidden") {
+				t.Errorf("mode %s: %q is hidden", mode, text)
+			}
+		}
+	}
+	// And for live voice, nothing about a realtime model is on show.
+	freshConfig(t)
+	_ = config.Set().Brain().Set(config.Brain{Mode: config.BrainLive})
+	w := httptest.NewRecorder()
+	brainSection(w, "tok")
+	page := w.Body.String()
+	at := strings.Index(page, "Realtime model")
+	open := strings.LastIndex(page[:at], "<span")
+	if tag := page[open : open+strings.Index(page[open:], ">")]; !strings.Contains(tag, " hidden") {
+		t.Errorf("live voice shows the realtime model: %s", tag)
+	}
+}
+
+// What is hidden still goes back with the form, so changing the way of answering and back loses nothing.
+func TestHiddenFieldsKeepTheirValues(t *testing.T) {
+	freshConfig(t)
+	_ = saveBrain(formPost(url.Values{"mode": {"direct"}, "stt": {"h:10300"}, "tts": {"h:10200"}, "llm": {"http://h:8080/v1"},
+		"model": {"m"}, "voice": {"v"}, "language": {"de"}, "key": {"k"}}))
+	_ = config.Set().Brain().Set(config.Get().Brain)
+	w := httptest.NewRecorder()
+	brainSection(w, "tok")
+	for _, want := range []string{`value="h:10300"`, `value="h:10200"`, `value="http://h:8080/v1"`, `name="model" value="m"`, `value="de"`} {
+		if !strings.Contains(w.Body.String(), want) {
+			t.Errorf("a saved value is missing from the form: %s", want)
+		}
+	}
+}
