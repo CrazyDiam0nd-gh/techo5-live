@@ -164,6 +164,12 @@ func readOwn(path string) ([]int16, error) {
 	if len(b) > largestOwn {
 		return nil, fmt.Errorf("more than %d bytes is longer than a sound needs to be", largestOwn)
 	}
+	return parseOwn(b)
+}
+
+// parseOwn is the rule for a recording of the owner's, applied to a file already in memory: the
+// device reads a file with it, and the setup page checks an upload with it before it is kept.
+func parseOwn(b []byte) ([]int16, error) {
 	samples, f, err := MonoWAV(b)
 	if err != nil {
 		return nil, err

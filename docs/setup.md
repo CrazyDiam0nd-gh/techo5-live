@@ -320,7 +320,16 @@ yourself. Each comes as two files, a `.json` and a `.tflite` with the same name 
 
 ### Sounds of your own
 
-The sounds a voice request makes can be recordings of your own. Put a WAVE file named for the sound
+The sounds a voice request makes can be recordings of your own.
+
+**From the setup page.** Open the setup page, then **Sound & Voice**, and find **Sounds of your own**.
+Each sound has a file picker. Choose any audio file your browser can play (MP3, M4A, WAV, OGG and so
+on): the page turns it into the device's format on your phone or computer, shows how long it is, and
+lets you listen before you press **Use this sound**. **Play on the device** plays what is in use now,
+and **Remove mine** puts the built-in sound back. A sound can be at most 10 seconds, and the page says
+so when a wake sound is long enough to cost the first words of a request.
+
+**Over SSH.** Or put a WAVE file named for the sound
 in the device's sounds folder, over SSH
 ([Set the SSH authorized keys](actions.md#set-the-ssh-authorized-keys)). The folder is
 `/data/misc/echolocal/sounds` on an Echo Dot, and `/data/misc/techo5/sounds` on everything else.

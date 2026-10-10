@@ -73,6 +73,8 @@ func (f *Feature) serve(w http.ResponseWriter, r *http.Request) {
 		f.save(w, r)
 	case "/setup/photo":
 		f.photo(w, r)
+	case "/setup/sound":
+		f.sound(w, r)
 	case "/setup/diagnostics.txt":
 		f.diagnostics(w, r)
 	default:
@@ -240,6 +242,10 @@ func (f *Feature) save(w http.ResponseWriter, r *http.Request) {
 		problem = saveListening(r)
 	case "photos-remove":
 		problem = removePhotos(r)
+	case "sound-remove":
+		problem = removeSound(r.PostFormValue("name"))
+	case "sound-play":
+		problem = playSound(r.PostFormValue("name"))
 	case "reolink":
 		problem = saveReolink(r)
 	case "talkback":
@@ -345,6 +351,7 @@ func (f *Feature) settingsPage(ctx context.Context, w http.ResponseWriter, token
 	// Within a tab, what is changed most comes first; a long tab is split under group headings.
 	case "sound":
 		speakerSection(w, token)
+		soundsSection(w, token)
 		fmt.Fprint(w, `<h3>Music</h3>`)
 		stationsSection(w, token)
 		musicSection(ctx, w, token)
