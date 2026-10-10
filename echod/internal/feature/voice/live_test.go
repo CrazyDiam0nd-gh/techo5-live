@@ -395,3 +395,86 @@ func TestLiveIsChosenOnlyWhenSetUp(t *testing.T) {
 		t.Error("live is also another mode")
 	}
 }
+
+// The backend's first response completes the moment it asks for a tool, before the tool has run. That is
+// not the end of the reply: the model says "Checking", waits, and then gives the result, all in one reply.
+func TestLiveAReplyThatUsesAToolIsOneReply(t *testing.T) {
+	release := make(chan struct{})
+	_, events, f := liveSetup(t, func(name, args string) string {
+		<-release
+		return "locked"
+	})
+	f.heard(" Is the door locked", 400)
+	f.send(map[string]any{"type": "session.delegation.created", "delegation": map[string]any{"id": "d"}})
+	f.said(" Checking.", 1500)
+	f.voice(true, 6)
+	f.send(map[string]any{"type": "response.event", "delegation_id": "d", "event": map[string]any{
+		"type": "response.output_item.done", "item": map[string]any{
+			"type": "function_call", "call_id": "c", "name": "get_time", "arguments": "{}"}}})
+	f.send(map[string]any{"type": "response.event", "delegation_id": "d", "event": map[string]any{"type": "response.completed"}})
+	f.voice(false, 40) // four seconds while the tool runs
+
+	time.Sleep(200 * time.Millisecond)
+	for len(events) > 0 {
+		if e := <-events; e.kind == evStreamEnd {
+			t.Fatal("the reply ended while the tool was running")
+		}
+	}
+	close(release)
+	var result bool
+	deadline := time.After(3 * time.Second)
+	for !result {
+		select {
+		case m := <-f.got:
+			result = m["type"] == "response.create"
+		case <-deadline:
+			t.Fatal("the result was not sent")
+		}
+	}
+	f.send(map[string]any{"type": "response.event", "delegation_id": "d", "event": map[string]any{"type": "response.created"}})
+	f.said(" It is locked.", 7000)
+	f.voice(true, 8)
+	f.send(map[string]any{"type": "response.event", "delegation_id": "d", "event": map[string]any{"type": "response.completed"}})
+	f.voice(false, 14)
+	got := waitFor(t, events, evStreamEnd)
+	// The filler was read off the queue above; what is left is the wait, played out, and the answer.
+	if n := samples(got); n < (40+8)*1600-300 {
+		t.Errorf("%d samples in the reply, want the wait and the answer", n)
+	}
+	time.Sleep(100 * time.Millisecond)
+	for len(events) > 0 {
+		if e := <-events; e.kind == evStreamEnd {
+			t.Error("the reply ended twice")
+		}
+	}
+}
+
+// Audio after a reply was declared finished is dropped, not sent into a closed channel.
+func TestAStreamThatIsDoneTakesNoMoreAudio(t *testing.T) {
+	s := newStream(0, 0, 0)
+	s.send([]byte{1, 0})
+	s.done()
+	s.done() // twice is fine
+	s.send([]byte{2, 0})
+	n := 0
+	for range s.chunks {
+		n++
+	}
+	if n != 1 {
+		t.Errorf("%d chunks, want the one sent before the end", n)
+	}
+}
+
+// The live model is in the conversation all the time: a follow-up does not announce itself.
+func TestQuietFollowUpOnlyForLiveFollowUps(t *testing.T) {
+	l := newLive(func(event) {})
+	if !quietFollowUp(l, true) {
+		t.Error("a live follow-up makes a sound")
+	}
+	if quietFollowUp(l, false) {
+		t.Error("a live wake word makes no sound")
+	}
+	if quietFollowUp(newRealtime(func(event) {}), true) {
+		t.Error("the half-duplex mode lost its follow-up sound")
+	}
+}

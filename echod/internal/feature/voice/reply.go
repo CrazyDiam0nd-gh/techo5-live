@@ -3,6 +3,7 @@ package voice
 import (
 	"context"
 	"log/slog"
+	"sync"
 	"time"
 
 	"github.com/HuskerMinion/techo5/echod/internal/feature/media"
@@ -22,6 +23,12 @@ const chunkQueue = 64
 // that plays it: the conversation writes chunks and reads the counters once the claim is done.
 type stream struct {
 	chunks chan []byte
+
+	// closed says done has been called, under mu: a source that speaks again after it said it had
+	// finished (the live model answers after "Checking") must not send on a closed channel, which
+	// takes the whole conversation down.
+	mu     sync.Mutex
+	closed bool
 
 	// buffer is how much to collect before playing any of it. Home Assistant paces itself to stay 384
 	// ms ahead, which is enough when speech arrives faster than it plays and not when it does not.
@@ -58,6 +65,12 @@ func newStream(splices, underruns uint64, buffer time.Duration) *stream {
 // send hands a chunk to whoever is playing it. A queue this deep only fills if audio is arriving
 // faster than it plays, in which case a dropped chunk is the least of it.
 func (s *stream) send(data []byte) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.closed {
+		slog.Warn("reply chunk after the end of the reply dropped", "bytes", len(data))
+		return
+	}
 	select {
 	case s.chunks <- data:
 	default:
@@ -66,7 +79,14 @@ func (s *stream) send(data []byte) {
 }
 
 // done says no more chunks are coming, which is what ends the errand.
-func (s *stream) done() { close(s.chunks) }
+func (s *stream) done() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if !s.closed {
+		s.closed = true
+		close(s.chunks)
+	}
+}
 
 // play is the errand: it takes chunks until there are no more and queues them once enough has arrived
 // to play through a dip. Returning hands over to the driver, which waits for the audio to be heard.

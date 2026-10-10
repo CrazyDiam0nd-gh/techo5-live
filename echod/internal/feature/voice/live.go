@@ -40,6 +40,8 @@ const (
 	// to count as talking over it.
 	endSilence      = 1200 * time.Millisecond
 	workSilence     = 25 * time.Second
+	workGrace       = 6 * time.Second // the backend is taken to be working this long after it last did anything
+	resultGrace     = 8 * time.Second // and this long after a tool's result went back
 	talkedOverAfter = 300
 )
 
@@ -64,14 +66,20 @@ type liveBackend struct {
 	heard       strings.Builder // what the person said
 	said        strings.Builder // what the model said, as text
 	heardPosted bool
-	speaking    bool            // voiced audio is flowing
-	silentMs    int             // the pause so far inside a reply
-	held        [][]int16       // the pause, kept back in case speech resumes (at 16 kHz)
-	dropping    bool            // the tail of a reply that was talked over: dropped until it goes quiet
-	replyFrom   int             // the model's clock when it began to speak, in ms; -1 before it has
-	work        int             // pieces of backend work not yet complete
-	res         *live.Resampler // 24 kHz to the voice rate
-	spoke       time.Time
+	speaking    bool      // voiced audio is flowing
+	silentMs    int       // the pause so far inside a reply
+	held        [][]int16 // the pause, kept back in case speech resumes (at 16 kHz)
+	dropping    bool      // the tail of a reply that was talked over: dropped until it goes quiet
+	replyFrom   int       // the model's clock when it began to speak, in ms; -1 before it has
+	// The backend is working while a tool runs, and for a few seconds after it last did anything:
+	// the model is silent while it waits, and that is not the end of what it has to say. It has
+	// finished when a response completes that asked for no tool; one that asked for a tool completes
+	// at once, before the tool has run, and is not the end.
+	workUntil  time.Time
+	tools      int             // tools being run
+	callInResp bool            // the response now in progress asked for a tool
+	res        *live.Resampler // 24 kHz to the voice rate
+	spoke      time.Time
 
 	micMu sync.Mutex
 	mic   *live.Resampler // the microphone's 16 kHz to the model's 24 kHz
@@ -157,7 +165,8 @@ func (b *liveBackend) newTurn() {
 	b.heard.Reset()
 	b.said.Reset()
 	b.heardPosted, b.speaking, b.dropping = false, false, false
-	b.silentMs, b.held, b.replyFrom, b.work = 0, nil, -1, 0
+	b.silentMs, b.held, b.replyFrom = 0, nil, -1
+	b.workUntil, b.callInResp = time.Time{}, false
 	b.res.Reset()
 	b.spoke = time.Time{}
 }
@@ -294,19 +303,30 @@ func (b *liveBackend) handle(cl *live.Client, e live.Event) {
 
 	case "session.delegation.created":
 		b.mu.Lock()
-		b.work++
+		b.workUntil = time.Now().Add(workGrace)
 		b.mu.Unlock()
+		slog.Info("live: the model handed the request to the backend")
 
 	case "response.event":
+		call, isCall := e.FunctionCall()
+		b.mu.Lock()
+		if isCall {
+			b.callInResp = true
+			b.tools++
+		}
+		b.workUntil = time.Now().Add(workGrace)
 		if e.Inner != nil {
 			switch e.Inner.Type {
 			case "response.completed", "response.failed", "response.incomplete", "response.cancelled":
-				b.mu.Lock()
-				b.work = max(0, b.work-1)
-				b.mu.Unlock()
+				if b.callInResp {
+					b.callInResp = false // it asked for a tool: the answer comes after the result
+				} else {
+					b.workUntil = time.Time{}
+				}
 			}
 		}
-		if call, ok := e.FunctionCall(); ok {
+		b.mu.Unlock()
+		if isCall {
 			b.runTool(cl, call)
 		}
 
@@ -332,7 +352,8 @@ func (b *liveBackend) onHeard(e live.Event) {
 		b.said.Reset()
 		b.heard.Reset()
 		b.heard.WriteString(e.Delta)
-		b.heardPosted, b.replyFrom, b.work = false, -1, 0
+		b.heardPosted, b.replyFrom = false, -1
+		b.workUntil, b.callInResp = time.Time{}, false
 		b.res.Reset()
 	}
 	active := b.active
@@ -379,7 +400,7 @@ func (b *liveBackend) onVoice(samples []int16) {
 		b.silentMs += ms
 		b.held = append(b.held, out)
 		limit := endSilence
-		if b.work > 0 {
+		if b.tools > 0 || time.Now().Before(b.workUntil) {
 			limit = workSilence
 		}
 		ended = time.Duration(b.silentMs)*time.Millisecond >= limit
@@ -422,12 +443,20 @@ func (b *liveBackend) runTool(cl *live.Client, call live.Call) {
 	b.mu.Unlock()
 	if kit.Run == nil {
 		_ = cl.ToolResult(call, "That is not something this device can do.")
+		b.mu.Lock()
+		b.tools = max(0, b.tools-1)
+		b.mu.Unlock()
 		return
 	}
 	safe.Go("live tool", func() {
 		result := kit.Run(call.Name, call.Arguments)
 		slog.Info("live: tool", "name", call.Name, "args", call.Arguments, "result", result)
-		if err := cl.ToolResult(call, result); err != nil {
+		err := cl.ToolResult(call, result)
+		b.mu.Lock()
+		b.tools = max(0, b.tools-1)
+		b.workUntil = time.Now().Add(resultGrace) // the backend now writes its answer
+		b.mu.Unlock()
+		if err != nil {
 			b.post(event{kind: evError, code: "live", msg: err.Error()})
 		}
 	})

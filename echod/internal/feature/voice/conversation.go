@@ -688,7 +688,11 @@ func (c *conversation) start(n nextTurn) {
 	// A follow-up chimes like the wake word that started the conversation, unless the slot has been
 	// told a follow-up should be silent: the microphone is open again with nothing said to say so. It
 	// is not a wake, though, so it does not report a phrase nobody spoke.
-	wakeword.Chime(slot, n.followUp)
+	// The live model is in the conversation all the time, so a follow-up is not a new request to announce:
+	// a tone would hold the microphone back, cutting off the first words, every few seconds.
+	if !quietFollowUp(c.be, n.followUp) {
+		wakeword.Chime(slot, n.followUp)
+	}
 	if !n.followUp {
 		c.log.Woke(phrase)
 	}
@@ -1069,7 +1073,8 @@ func (c *conversation) stream(ctx context.Context, be backend, slot int, followU
 	// A slot that chimes does not send it: whoever is talking waits for the tone, so the history holds
 	// the wake word rather than the request, and the tone itself is louder at the array than they are.
 	pre := c.source.Recent(mic.History)
-	if wakeword.Tones(slot, followUp) {
+	tones := wakeword.Tones(slot, followUp) && !quietFollowUp(be, followUp)
+	if tones {
 		pre = nil
 	}
 	// After a reply the history is the reply itself, ringing in the room: a follow-up has no wake word
@@ -1130,7 +1135,7 @@ func (c *conversation) stream(ctx context.Context, be backend, slot int, followU
 	// nothing is sent while it is sounding. What the speaker still has queued says when that is, and
 	// hardwareTail is what the driver holds after the queue runs out.
 	var sounding time.Time
-	if wakeword.Tones(slot, followUp) {
+	if tones {
 		sounding = time.Now().Add(wakeword.ChimeLength(slot, followUp) + speaker.HardwareTail)
 	}
 	var held int
@@ -1277,4 +1282,11 @@ func int16Bytes(s []int16) []byte {
 		b = append(b, byte(v), byte(v>>8))
 	}
 	return b
+}
+
+// quietFollowUp is whether a follow-up turn makes no sound as it opens: the live model keeps listening
+// between its replies, so there is nothing to announce.
+func quietFollowUp(be backend, followUp bool) bool {
+	_, live := be.(*liveBackend)
+	return followUp && live
 }

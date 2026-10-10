@@ -39,10 +39,19 @@ func main() {
 	scenario := flag.String("scenario", "basic", "basic, tool or interrupt")
 	out := flag.String("out", "live-reply.wav", "where the model's voice is saved")
 	wait := flag.Duration("wait", 25*time.Second, "how long to listen after the question")
+	tryVoices := flag.String("try-voices", "", "instead of a conversation, open a session with each of these voices (comma separated, or \"all\") and say which the server accepts")
 	flag.Parse()
 
 	key, err := os.ReadFile(*keyFile)
 	check(err)
+	if *tryVoices != "" {
+		names := strings.Split(*tryVoices, ",")
+		if *tryVoices == "all" {
+			names = append(append([]string{}, live.Voices...), "arbor", "cove", "maple", "sol", "spruce", "ember", "vale", "breeze", "juniper")
+		}
+		tryAll(strings.TrimSpace(string(key)), *model, *backend, names)
+		return
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
 	defer cancel()
 
@@ -183,6 +192,30 @@ func main() {
 		if f, ok := first[n]; ok {
 			fmt.Printf("  %s\n    %s\n", n, f)
 		}
+	}
+}
+
+// tryAll opens a session for each voice name, and closes it at once: a session that sends no audio costs
+// next to nothing, and the server refuses a name it does not have when the session starts.
+func tryAll(key, model, backend string, names []string) {
+	seen := map[string]bool{}
+	for _, n := range names {
+		n = strings.TrimSpace(n)
+		if n == "" || seen[n] {
+			continue
+		}
+		seen[n] = true
+		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+		c, err := live.Dial(ctx, live.Config{Key: key, Model: model, Backend: backend, Voice: n,
+			Instructions: "Say nothing."})
+		cancel()
+		if err != nil {
+			fmt.Printf("  %-10s no: %v\n", n, err)
+			continue
+		}
+		fmt.Printf("  %-10s yes\n", n)
+		c.Close()
+		time.Sleep(600 * time.Millisecond)
 	}
 }
 
