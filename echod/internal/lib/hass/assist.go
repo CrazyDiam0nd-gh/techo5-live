@@ -161,3 +161,90 @@ func (e Exposed) String() string {
 	}
 	return fmt.Sprintf("%s (%s%s): %s", e.Name, e.Domain, room, e.State)
 }
+
+// ScriptField is one input a script takes, as the script describes it.
+type ScriptField struct {
+	Name        string
+	Description string
+	Required    bool
+	Options     []string
+}
+
+// ScriptInfo is what a script says about itself, for a voice assistant to read before it runs one.
+type ScriptInfo struct {
+	Name        string
+	Description string
+	Fields      []ScriptField
+}
+
+// ScriptInfo reads a script's own description and fields from its configuration. id is the part of the
+// entity id after "script.".
+func (c *Client) ScriptInfo(id string) (ScriptInfo, error) {
+	out, err := c.do("GET", "/api/config/script/config/"+id, nil)
+	if err != nil {
+		return ScriptInfo{}, err
+	}
+	var cfg struct {
+		Alias       string `json:"alias"`
+		Description string `json:"description"`
+		Fields      map[string]struct {
+			Description string `json:"description"`
+			Required    bool   `json:"required"`
+			Selector    struct {
+				Select struct {
+					Options []json.RawMessage `json:"options"`
+				} `json:"select"`
+			} `json:"selector"`
+		} `json:"fields"`
+	}
+	if err := json.Unmarshal(out, &cfg); err != nil {
+		return ScriptInfo{}, err
+	}
+	info := ScriptInfo{Name: cfg.Alias, Description: cfg.Description}
+	names := make([]string, 0, len(cfg.Fields))
+	for n := range cfg.Fields {
+		names = append(names, n)
+	}
+	sort.Strings(names)
+	for _, n := range names {
+		f := cfg.Fields[n]
+		field := ScriptField{Name: n, Description: f.Description, Required: f.Required}
+		for _, o := range f.Selector.Select.Options {
+			var s string
+			var v struct {
+				Value string `json:"value"`
+			}
+			if json.Unmarshal(o, &s) == nil {
+				field.Options = append(field.Options, s)
+			} else if json.Unmarshal(o, &v) == nil && v.Value != "" {
+				field.Options = append(field.Options, v.Value)
+			}
+		}
+		info.Fields = append(info.Fields, field)
+	}
+	return info, nil
+}
+
+// RunScript runs a script with its fields and waits for it to finish, returning what it said back: the
+// response a script gives with "stop", as Home Assistant's own voice assistant reads it, or "done".
+// object is the part of the entity id after "script.".
+func (c *Client) RunScript(object string, fields map[string]any) (string, error) {
+	if fields == nil {
+		fields = map[string]any{}
+	}
+	out, err := c.do("POST", "/api/services/script/"+object+"?return_response", fields)
+	if err != nil {
+		return "", err
+	}
+	var resp struct {
+		ServiceResponse any `json:"service_response"`
+	}
+	if json.Unmarshal(out, &resp) != nil || resp.ServiceResponse == nil {
+		return "done", nil
+	}
+	b, _ := json.Marshal(resp.ServiceResponse)
+	if s := string(b); s != "{}" && s != "null" && s != `""` {
+		return s, nil
+	}
+	return "done", nil
+}

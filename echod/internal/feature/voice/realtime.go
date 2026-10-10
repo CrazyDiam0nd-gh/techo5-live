@@ -118,6 +118,13 @@ func (b *realtimeBackend) Start(string) error {
 		b.closer = nil
 	}
 	b.started = time.Now()
+	if b.cl != nil && b.ready && RealtimeKit != nil && len(RealtimeKit().Tools) != len(b.kit.Tools) {
+		// What the model may do has changed (the house was connected): it is told at the start of a
+		// session, so begin a new one.
+		slog.Info("realtime: the tools changed, opening a new session")
+		b.cl.Close()
+		b.cl, b.ready = nil, false
+	}
 	if b.cl != nil && b.ready {
 		kit := b.kit
 		cl := b.cl

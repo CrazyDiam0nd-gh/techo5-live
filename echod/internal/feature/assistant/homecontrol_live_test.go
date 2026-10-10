@@ -38,6 +38,7 @@ func TestLiveHome(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Logf("%d exposed devices in %v", len(list), time.Since(start))
+	t.Logf("--- guidance\n%s", homeGuidance())
 	for _, q := range []string{"", "kitchen lights", "thermostat", "bedroom blind", "front door", "home theater"} {
 		t.Logf("--- %q\n%s", q, homeStatus(list, q))
 	}

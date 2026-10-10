@@ -16,6 +16,7 @@ import (
 	"github.com/HuskerMinion/techo5/echod/internal/config"
 	"github.com/HuskerMinion/techo5/echod/internal/feature/home"
 	"github.com/HuskerMinion/techo5/echod/internal/feature/voice"
+	"github.com/HuskerMinion/techo5/echod/internal/lib/hass"
 	"github.com/HuskerMinion/techo5/echod/internal/lib/llm"
 	"github.com/HuskerMinion/techo5/echod/internal/lib/realtime"
 	"github.com/HuskerMinion/techo5/echod/internal/lib/triggers"
@@ -35,8 +36,14 @@ func kit() voice.Kit {
 		rt[i] = realtime.Tool{Name: t.Name, Description: t.Description, Parameters: t.Parameters}
 	}
 	return voice.Kit{
-		Instructions: func(now time.Time) string { return instructions(config.Get().Brain, now) },
-		Tools:        rt,
+		Instructions: func(now time.Time) string {
+			s := instructions(config.Get().Brain, now)
+			if home := homeGuidance(); home != "" {
+				s += "\n\n" + home
+			}
+			return s
+		},
+		Tools: rt,
 		Run: func(name, arguments string) string {
 			var call llm.ToolCall
 			call.Function.Name, call.Function.Arguments = name, arguments
@@ -227,4 +234,40 @@ func run(ts []tool, call llm.ToolCall) string {
 		return out
 	}
 	return "error: there is no tool called " + call.Function.Name
+}
+
+// homeGuidance is what the model is told about the house when it can reach it: how to use the tools,
+// and the scripts there are.
+func homeGuidance() string {
+	if !hass.Get().Ready() {
+		return ""
+	}
+	guidance.mu.Lock()
+	defer guidance.mu.Unlock()
+	if guidance.text != "" && time.Since(guidance.at) < guidanceFor {
+		return guidance.text
+	}
+	guidance.text, guidance.at = buildGuidance(), time.Now()
+	return guidance.text
+}
+
+// guidanceFor is how long what the model was told about the house is reused: reading every script takes
+// a moment, and scripts change rarely.
+const guidanceFor = 5 * time.Minute
+
+var guidance struct {
+	mu   sync.Mutex
+	text string
+	at   time.Time
+}
+
+func buildGuidance() string {
+	s := "The house: use home_status to look up how any device is (lights, blinds, thermostat, sensors, media players, the " +
+		"alarm, the vacuum) and home_control to operate one. Only devices the owner exposed to the home's voice assistant can be " +
+		"reached; a lock or the alarm can be checked but never operated. Say what the result says, and never say something " +
+		"was done that a tool did not report. When several devices match, ask which, unless the person said all of them."
+	if c := scriptCatalog(); c != "" {
+		s += "\n\n" + c
+	}
+	return s
 }

@@ -117,3 +117,40 @@ func TestUnknownDeviceAndAction(t *testing.T) {
 		t.Error("unknown action accepted")
 	}
 }
+
+func TestRunScriptNamed(t *testing.T) {
+	list := append(house(),
+		hass.Exposed{ID: "script.play_playlist", Domain: "script", Name: "Play playlist", State: "off"},
+		hass.Exposed{ID: "script.play_music", Domain: "script", Name: "Play music", State: "off"})
+	var gotObject string
+	var gotFields map[string]any
+	run := func(o string, f map[string]any) (string, error) {
+		gotObject, gotFields = o, f
+		return `{"message":"ok"}`, nil
+	}
+
+	out, err := runScript(list, "play playlist", map[string]any{"playlist": "Metal"}, run)
+	if err != nil || gotObject != "play_playlist" || gotFields["playlist"] != "Metal" || !strings.Contains(out, "ok") {
+		t.Errorf("out=%q err=%v object=%s fields=%v", out, err, gotObject, gotFields)
+	}
+	if _, err := runScript(list, "play", nil, run); err == nil || !strings.Contains(err.Error(), "several") {
+		t.Errorf("an ambiguous name ran: %v", err)
+	}
+	if _, err := runScript(list, "launch missiles", nil, run); err == nil {
+		t.Error("an unknown script ran")
+	}
+	// Scripts only: a light is not one.
+	if _, err := runScript(list, "kitchen island", nil, run); err == nil {
+		t.Error("a light ran as a script")
+	}
+}
+
+func TestScriptLine(t *testing.T) {
+	got := scriptLine("Play music", hass.ScriptInfo{Description: "Play an artist.\n  Call it at once.", Fields: []hass.ScriptField{
+		{Name: "device", Description: "Speaker", Options: []string{"dot", "denon"}},
+		{Name: "name", Description: "The artist", Required: true}}})
+	want := "- Play music: Play an artist. Call it at once. Fields: device [dot|denon]: Speaker; name (required): The artist."
+	if got != want {
+		t.Errorf("got  %q\nwant %q", got, want)
+	}
+}

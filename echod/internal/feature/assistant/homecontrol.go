@@ -20,6 +20,9 @@ import (
 // homeTimeout bounds one tool call, which a spoken turn waits on.
 const homeTimeout = 8 * time.Second
 
+// scriptTimeout bounds a script, which can be asked to search a music library.
+const scriptTimeout = 25 * time.Second
+
 // maxLines bounds what a status answer lists, which the model has to read out.
 const maxLines = 20
 
@@ -41,6 +44,25 @@ func homeTools() []tool {
 					return "", err
 				}
 				return homeStatus(list, argString(a, "query")), nil
+			}},
+
+		{llm.Tool{Name: "home_run_script", Description: "Run one of the house's scripts, which do things the other tools cannot: " +
+			"play music, change the home theater volume, start a computer. The list of scripts, what each one is for and the fields " +
+			"it takes is in your instructions. Give the fields it asks for; leave out the ones it says to leave out. The answer is " +
+			"what the script said happened: say that, and do not claim more.",
+			Parameters: object(map[string]any{
+				"script": str("The script's name, like 'Play playlist'."),
+				"fields": map[string]any{"type": "object", "description": "The script's fields, by name."},
+			}, "script")},
+			func(a map[string]any) (string, error) {
+				ctx, cancel := context.WithTimeout(context.Background(), scriptTimeout)
+				defer cancel()
+				list, err := hass.Get().ExposedEntities(ctx)
+				if err != nil {
+					return "", err
+				}
+				fields, _ := a["fields"].(map[string]any)
+				return runScript(list, argString(a, "script"), fields, hass.Get().RunScript)
 			}},
 
 		{llm.Tool{Name: "home_control", Description: "Operate a device in the house. device is words from its name or room " +
@@ -380,4 +402,93 @@ func homeControl(list []hass.Exposed, device, action string, value float64, hasV
 		return "done: " + strings.Join(done, "; ") + ". Could not: " + strings.Join(failed, "; "), nil
 	}
 	return "done: " + strings.Join(done, "; "), nil
+}
+
+// runScript runs the exposed script that was named, if exactly one was.
+func runScript(list []hass.Exposed, name string, fields map[string]any, run func(object string, fields map[string]any) (string, error)) (string, error) {
+	var scripts []hass.Exposed
+	for _, e := range list {
+		if e.Domain == "script" {
+			scripts = append(scripts, e)
+		}
+	}
+	found := match(scripts, name)
+	switch {
+	case len(found) == 0:
+		return "", fmt.Errorf("no script matches %q", name)
+	case len(found) > 1:
+		var names []string
+		for _, e := range found {
+			names = append(names, e.Name)
+		}
+		return "", fmt.Errorf("several scripts match: %s", strings.Join(names, "; "))
+	}
+	out, err := run(strings.TrimPrefix(found[0].ID, "script."), fields)
+	if err != nil {
+		return "", fmt.Errorf("%s: %w", found[0].Name, err)
+	}
+	hass.ForgetExposed()
+	return found[0].Name + ": " + out, nil
+}
+
+// scriptCatalog tells the model which scripts there are, what each is for and what it takes, read from
+// the scripts themselves. A script the user exposes to Home Assistant's voice assistant appears here
+// without anything else being set up.
+func scriptCatalog() string {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	list, err := hass.Get().ExposedEntities(ctx)
+	if err != nil {
+		return ""
+	}
+	var lines []string
+	size := 0
+	for _, e := range list {
+		if e.Domain != "script" {
+			continue
+		}
+		info, err := hass.Get().ScriptInfo(strings.TrimPrefix(e.ID, "script."))
+		if err != nil {
+			info = hass.ScriptInfo{Name: e.Name}
+		}
+		line := scriptLine(e.Name, info)
+		if size += len(line); size > 6000 {
+			break
+		}
+		lines = append(lines, line)
+	}
+	if len(lines) == 0 {
+		return ""
+	}
+	return "Scripts you can run with home_run_script (name: what it is for. Fields):\n" + strings.Join(lines, "\n")
+}
+
+// scriptLine is one script as the model reads it.
+func scriptLine(name string, info hass.ScriptInfo) string {
+	desc := strings.Join(strings.Fields(info.Description), " ")
+	if len(desc) > 300 {
+		desc = desc[:300] + "..."
+	}
+	var fields []string
+	for _, f := range info.Fields {
+		s := f.Name
+		if f.Required {
+			s += " (required)"
+		}
+		if len(f.Options) > 0 {
+			s += " [" + strings.Join(f.Options, "|") + "]"
+		}
+		if d := strings.Join(strings.Fields(f.Description), " "); d != "" {
+			s += ": " + d
+		}
+		fields = append(fields, s)
+	}
+	line := "- " + name
+	if desc != "" {
+		line += ": " + desc
+	}
+	if len(fields) > 0 {
+		line += " Fields: " + strings.Join(fields, "; ") + "."
+	}
+	return line
 }
