@@ -1259,7 +1259,10 @@ func pageAsked(heard string) bool {
 	if triggers.AboutGoingHome(heard, lang) || triggers.AboutCamera(heard, lang) {
 		return true
 	}
-	return !config.Get().Brain.Direct() && (triggers.AboutWeather(heard, lang) || triggers.AboutRadar(heard, lang))
+	// Only where Home Assistant's answer is what opens the page: the direct and realtime pipelines answer
+	// in words, and a weather question is no reason not to listen for what comes next.
+	brain := config.Get().Brain
+	return !brain.Direct() && !brain.Realtime() && (triggers.AboutWeather(heard, lang) || triggers.AboutRadar(heard, lang))
 }
 
 // int16Bytes is samples as 16-bit little-endian bytes.

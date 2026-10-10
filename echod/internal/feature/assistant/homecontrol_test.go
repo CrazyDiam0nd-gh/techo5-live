@@ -3,6 +3,7 @@ package assistant
 import (
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/HuskerMinion/techo5/echod/internal/lib/hass"
 )
@@ -248,5 +249,34 @@ func TestMoveMusic(t *testing.T) {
 	two[0].State = "idle"
 	if _, err := moveMusic(two, "dot", "", "Dot", rec); err == nil || !strings.Contains(err.Error(), "several players") && !strings.Contains(err.Error(), "several") {
 		t.Errorf("two sources: %v", err)
+	}
+}
+
+func TestHomeWeather(t *testing.T) {
+	now := time.Date(2026, 10, 10, 9, 0, 0, 0, time.UTC)
+	list := append(house(), hass.Exposed{ID: "weather.home", Domain: "weather", Name: "Home", State: "partlycloudy",
+		Attrs: map[string]any{"temperature": 14.0, "temperature_unit": "°C", "humidity": 71.0}})
+	fc := func(string) ([]hass.Day, error) {
+		return []hass.Day{
+			{When: now.AddDate(0, 0, -1), Condition: "rainy", High: 9, Low: 4, Rain: -1},
+			{When: now, Condition: "cloudy", High: 15, Low: 8, Rain: 20},
+			{When: now.AddDate(0, 0, 1), Condition: "rainy", High: 12, Low: 7, Rain: 80},
+			{When: now.AddDate(0, 0, 2), Condition: "sunny", High: 17, Low: 6, Rain: -1},
+		}, nil
+	}
+	got, err := homeWeather(list, 2, now, fc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"Now: partlycloudy, 14°C, humidity 71 percent", "Today: cloudy, high 15°C, low 8°C, 20 percent chance of rain", "Tomorrow: rainy, high 12°C"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("missing %q in\n%s", want, got)
+		}
+	}
+	if strings.Contains(got, "sunny") || strings.Contains(got, "Friday") {
+		t.Errorf("past or extra days shown:\n%s", got)
+	}
+	if _, err := homeWeather(house(), 3, now, fc); err == nil {
+		t.Error("no weather source, no error")
 	}
 }

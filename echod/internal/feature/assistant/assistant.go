@@ -284,12 +284,14 @@ func buildGuidance() string {
 // house's tools know about its speakers and its music service; the device's only know the device, so
 // "stop the music" through the device's stop reports success while the music plays on. Telling the model
 // which to use did not hold, so it is not given the choice. Silencing a ringing alarm or timer needs no
-// tool: the conversation does it when it hears "stop" while one is sounding.
+// tool: the conversation does it when it hears "stop" while one is sounding. The device's weather
+// needs a location of its own, which a speaker without a screen does not have; the house's weather source
+// (home_weather) is the one to ask.
 func forHouse(ts []tool) []tool {
 	out := make([]tool, 0, len(ts))
 	for _, t := range ts {
 		switch t.Name {
-		case "play_music", "stop":
+		case "play_music", "stop", "weather":
 			continue
 		}
 		out = append(out, t)

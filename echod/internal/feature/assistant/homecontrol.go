@@ -109,6 +109,23 @@ func homeTools() []tool {
 				return moveMusic(list, argString(a, "to"), argString(a, "from"), config.Get().Device.Name, hass.Get().Service)
 			}},
 
+		{llm.Tool{Name: "home_weather", Description: "The weather at home from the house's own weather source: how it is now and " +
+			"the forecast for the coming days. Use it for any question about the weather at home, today or on a later day.",
+			Parameters: object(map[string]any{"days": num("How many days to give, 1 to 7; 3 if not said.")})},
+			func(a map[string]any) (string, error) {
+				ctx, cancel := context.WithTimeout(context.Background(), homeTimeout)
+				defer cancel()
+				list, err := hass.Get().ExposedEntities(ctx)
+				if err != nil {
+					return "", err
+				}
+				n, ok := argNumber(a, "days")
+				if !ok {
+					n = 3
+				}
+				return homeWeather(list, int(n), time.Now(), hass.Get().Forecast)
+			}},
+
 		{llm.Tool{Name: "home_stop_music", Description: "Stop music. With no player named it stops every speaker and computer " +
 			"that is playing or paused, wherever it is: use that for 'stop the music', 'stop all music' and 'be quiet'. " +
 			"Name a player only when the person names one.",
@@ -693,4 +710,55 @@ func moveMusic(list []hass.Exposed, to, from, here string,
 	}
 	hass.ForgetExposed()
 	return fmt.Sprintf("moved the music from %s to %s", src[0].Name, dest[0].Name), nil
+}
+
+// homeWeather reads the weather the house has: its exposed weather entity, now and the days ahead.
+func homeWeather(list []hass.Exposed, days int, now time.Time, forecast func(entity string) ([]hass.Day, error)) (string, error) {
+	var w *hass.Exposed
+	for i := range list {
+		if list[i].Domain == "weather" {
+			w = &list[i]
+			break
+		}
+	}
+	if w == nil {
+		return "", errors.New("the house has no weather source exposed to the voice assistant")
+	}
+	days = min(max(days, 1), 7)
+	unit, _ := w.Attrs["temperature_unit"].(string)
+	var sb strings.Builder
+	fmt.Fprintf(&sb, "Now: %s", strings.ReplaceAll(w.State, "-", " "))
+	if t, ok := w.Attrs["temperature"].(float64); ok {
+		fmt.Fprintf(&sb, ", %g%s", t, unit)
+	}
+	if h, ok := w.Attrs["humidity"].(float64); ok {
+		fmt.Fprintf(&sb, ", humidity %g percent", h)
+	}
+	sb.WriteString(".")
+	fc, err := forecast(w.ID)
+	if err != nil || len(fc) == 0 {
+		return sb.String(), nil
+	}
+	today := now.Format("2006-01-02")
+	shown := 0
+	for _, d := range fc {
+		if shown == days {
+			break
+		}
+		name := d.When.Format("Monday")
+		switch day := d.When.Format("2006-01-02"); {
+		case day < today:
+			continue
+		case day == today:
+			name = "Today"
+		case day == now.AddDate(0, 0, 1).Format("2006-01-02"):
+			name = "Tomorrow"
+		}
+		fmt.Fprintf(&sb, "\n%s: %s, high %g%s, low %g%s", name, strings.ReplaceAll(d.Condition, "-", " "), d.High, unit, d.Low, unit)
+		if d.Rain >= 0 {
+			fmt.Fprintf(&sb, ", %d percent chance of rain", d.Rain)
+		}
+		shown++
+	}
+	return sb.String(), nil
 }

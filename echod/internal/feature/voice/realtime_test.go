@@ -381,3 +381,21 @@ func TestQuietIsNotSpoken(t *testing.T) {
 		}
 	}
 }
+
+// A weather question puts a page on the screen where Home Assistant answers it, so nothing listens after
+// it. The realtime pipeline answers in words, and listening for what comes next is the point.
+func TestWeatherQuestionStillGetsAFollowUpWithTheRealtimePipeline(t *testing.T) {
+	config.Use(filepath.Join(t.TempDir(), "state.json"))
+	if !pageAsked("what is the weather like tomorrow") {
+		t.Skip("the words are not taken for a weather question here")
+	}
+	if err := config.Set().Brain().Set(config.Brain{Mode: config.BrainRealtime, TTS: "x:1"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := config.Set().Brain().SetKey("k"); err != nil {
+		t.Fatal(err)
+	}
+	if pageAsked("what is the weather like tomorrow") {
+		t.Error("the realtime pipeline's weather answer ends the conversation")
+	}
+}

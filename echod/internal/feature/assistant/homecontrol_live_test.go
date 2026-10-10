@@ -38,6 +38,11 @@ func TestLiveHome(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Logf("%d exposed devices in %v", len(list), time.Since(start))
+	if w, err := homeWeather(list, 3, time.Now(), hass.Get().Forecast); err == nil {
+		t.Logf("--- weather\n%s", w)
+	} else {
+		t.Logf("--- weather: %v", err)
+	}
 	t.Logf("--- guidance\n%s", homeGuidance())
 	for _, q := range []string{"", "kitchen lights", "thermostat", "bedroom blind", "front door", "home theater"} {
 		t.Logf("--- %q\n%s", q, homeStatus(list, q))
