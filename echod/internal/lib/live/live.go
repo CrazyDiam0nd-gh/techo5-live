@@ -262,13 +262,24 @@ func (c *Client) AppendInstructions(text string) error {
 	return c.Send(map[string]any{"type": "session.instructions.append", "instructions": text})
 }
 
-// ToolResult gives the backend what a function call returned, and asks it to go on. The server
-// refuses a delegation_id on either message (the probe saw unknown_parameter), so the call is
-// identified by its call_id alone.
+// ToolResult gives the backend what a function call returned, and asks it to go on.
 func (c *Client) ToolResult(call Call, output string) error {
-	if err := c.Send(map[string]any{"type": "response.item.create",
-		"item": map[string]any{"type": "function_call_output", "call_id": call.CallID, "output": output}}); err != nil {
-		return err
+	return c.ToolResults([]Call{call}, []string{output})
+}
+
+// ToolResults gives the backend what several calls of one response returned, and then asks it to go on once.
+// The server refuses to go on while any call of the response is without its result
+// (function_call_outputs_required), so the results all go first. The server also refuses a delegation_id on
+// either message (the probe saw unknown_parameter), so a call is identified by its call_id alone.
+func (c *Client) ToolResults(calls []Call, outputs []string) error {
+	if len(calls) != len(outputs) {
+		return errors.New("live: a result for every call, and no more")
+	}
+	for i, call := range calls {
+		if err := c.Send(map[string]any{"type": "response.item.create",
+			"item": map[string]any{"type": "function_call_output", "call_id": call.CallID, "output": outputs[i]}}); err != nil {
+			return err
+		}
 	}
 	return c.Send(map[string]any{"type": "response.create"})
 }

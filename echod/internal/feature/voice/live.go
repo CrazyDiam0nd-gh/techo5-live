@@ -83,10 +83,14 @@ type liveBackend struct {
 	// finished when a response completes that asked for no tool; one that asked for a tool completes
 	// at once, before the tool has run, and is not the end.
 	workUntil  time.Time
-	tools      int             // tools being run
-	callInResp bool            // the response now in progress asked for a tool
+	tools      int         // tools being run
+	callInResp bool        // the response now in progress asked for a tool
+	calls      []live.Call // the tools the response in progress has asked for, to be run together
+	callsTimer *time.Timer
 	res        *live.Resampler // 24 kHz to the voice rate
 	spoke      time.Time
+
+	wg sync.WaitGroup // the goroutines this backend started, so a test can wait for them
 
 	micMu sync.Mutex
 	mic   *live.Resampler // the microphone's 16 kHz to the model's 24 kHz
@@ -173,7 +177,8 @@ func (b *liveBackend) Start(string) error {
 	if !b.opening {
 		b.opening = true
 		b.pending = nil
-		safe.Go("live open", b.open)
+		b.wg.Add(1)
+		safe.Go("live open", func() { defer b.wg.Done(); b.open() })
 	}
 	return nil
 }
@@ -227,7 +232,8 @@ func (b *liveBackend) open() {
 		b.mu.Unlock()
 		_ = cl.Audio(live.Bytes(out))
 	}
-	safe.Go("live events", func() { b.loop(cl) })
+	b.wg.Add(1)
+	safe.Go("live events", func() { defer b.wg.Done(); b.loop(cl) })
 }
 
 // afterWork is how long the voice is given, once the backend has finished, to say what it found: the
@@ -367,21 +373,30 @@ func (b *liveBackend) handle(cl *live.Client, e live.Event) {
 		if isCall {
 			b.callInResp = true
 			b.tools++
+			b.calls = append(b.calls, call)
+			// A response that asks for tools is complete as soon as it has asked, and that is the moment to run
+			// them all. If the completion never comes, a short wait does the same.
+			if b.callsTimer != nil {
+				b.callsTimer.Stop()
+			}
+			b.callsTimer = time.AfterFunc(toolBatchWait, func() { b.flushCalls(cl) })
 		}
 		b.workUntil = time.Now().Add(workGrace)
+		flush := false
 		if e.Inner != nil {
 			switch e.Inner.Type {
 			case "response.completed", "response.failed", "response.incomplete", "response.cancelled":
 				if b.callInResp {
 					b.callInResp = false // it asked for a tool: the answer comes after the result
+					flush = true
 				} else {
 					b.workUntil = time.Now().Add(afterWork)
 				}
 			}
 		}
 		b.mu.Unlock()
-		if isCall {
-			b.runTool(cl, call)
+		if flush {
+			b.flushCalls(cl)
 		}
 
 	case "error":
@@ -505,25 +520,48 @@ func (b *liveBackend) onVoice(samples []int16) {
 	}
 }
 
-// runTool does what the backend asked and gives it the result, whatever has happened since: the
-// backend waits for the answer, and the person may have talked over the reply that asked.
-func (b *liveBackend) runTool(cl *live.Client, call live.Call) {
+// toolBatchWait is how long the calls a response asks for are held for the rest of them, if the response's own
+// completion is slow to say it has finished asking.
+var toolBatchWait = 1500 * time.Millisecond
+
+// flushCalls runs the tools the response asked for, together, and gives the backend all their results before it
+// is asked to go on, whatever has happened since: the backend waits for the answer, and the person may have talked
+// over the reply that asked. The server refuses to go on with a result missing, which ended the turn when two tools
+// were asked for at once and each result asked to go on by itself.
+func (b *liveBackend) flushCalls(cl *live.Client) {
 	b.mu.Lock()
+	calls := b.calls
+	b.calls = nil
+	if b.callsTimer != nil {
+		b.callsTimer.Stop()
+		b.callsTimer = nil
+	}
 	kit := b.kit
 	b.mu.Unlock()
-	if kit.Run == nil {
-		_ = cl.ToolResult(call, "That is not something this device can do.")
-		b.mu.Lock()
-		b.tools = max(0, b.tools-1)
-		b.mu.Unlock()
+	if len(calls) == 0 {
 		return
 	}
-	safe.Go("live tool", func() {
-		result := kit.Run(call.Name, call.Arguments)
-		slog.Info("live: tool", "name", call.Name, "args", call.Arguments, "result", result)
-		err := cl.ToolResult(call, result)
+	b.wg.Add(1)
+	safe.Go("live tools", func() {
+		defer b.wg.Done()
+		outputs := make([]string, len(calls))
+		var wg sync.WaitGroup
+		for i, call := range calls {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				if kit.Run == nil {
+					outputs[i] = "That is not something this device can do."
+					return
+				}
+				outputs[i] = kit.Run(call.Name, call.Arguments)
+				slog.Info("live: tool", "name", call.Name, "args", call.Arguments, "result", outputs[i])
+			}()
+		}
+		wg.Wait()
+		err := cl.ToolResults(calls, outputs)
 		b.mu.Lock()
-		b.tools = max(0, b.tools-1)
+		b.tools = max(0, b.tools-len(calls))
 		b.workUntil = time.Now().Add(resultGrace) // the backend now writes its answer
 		b.mu.Unlock()
 		if err != nil {
@@ -568,4 +606,23 @@ func keepFor() time.Duration {
 		return time.Duration(n) * time.Second
 	}
 	return liveMemory
+}
+
+// shutdown ends the session, stops the timers and waits for the goroutines to finish. Nothing in the device
+// needs it (the process ends); a test that makes many backends does, so that one's goroutines are not still
+// running when the next changes the settings under them.
+func (b *liveBackend) shutdown() {
+	b.mu.Lock()
+	cl := b.cl
+	b.cl, b.ready, b.active = nil, false, false
+	for _, t := range []*time.Timer{b.closer, b.callsTimer} {
+		if t != nil {
+			t.Stop()
+		}
+	}
+	b.mu.Unlock()
+	if cl != nil {
+		cl.Close()
+	}
+	b.wg.Wait()
 }

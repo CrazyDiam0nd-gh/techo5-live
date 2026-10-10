@@ -288,3 +288,29 @@ func TestBoostIsLouderAndNeverClips(t *testing.T) {
 		t.Errorf("+6 dB on 1000: %v", got)
 	}
 }
+
+// Results for every call of a response go first, then one request to go on.
+func TestToolResultsGoBeforeOneContinue(t *testing.T) {
+	f := newFake(t, func(c *websocket.Conn, _ map[string]any) { started(c) })
+	cl, err := Dial(context.Background(), Config{Key: "k", URL: f.url()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cl.Close()
+	f.next()
+	calls := []Call{{CallID: "a", DelegationID: "d"}, {CallID: "b", DelegationID: "d"}}
+	if err := cl.ToolResults(calls, []string{"one", "two"}); err != nil {
+		t.Fatal(err)
+	}
+	var kinds []string
+	for range 3 {
+		m := f.next()
+		kinds = append(kinds, m["type"].(string))
+	}
+	if strings.Join(kinds, ",") != "response.item.create,response.item.create,response.create" {
+		t.Errorf("sent %v", kinds)
+	}
+	if err := cl.ToolResults(calls, []string{"only one"}); err == nil {
+		t.Error("fewer results than calls was accepted")
+	}
+}

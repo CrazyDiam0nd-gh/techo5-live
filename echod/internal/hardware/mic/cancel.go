@@ -4,6 +4,7 @@ import (
 	"log/slog"
 	"math"
 	"sync/atomic"
+	"time"
 
 	"github.com/HuskerMinion/techo5/echod/internal/lib/aec"
 	"github.com/HuskerMinion/techo5/echod/internal/lib/audio"
@@ -57,6 +58,13 @@ type canceller struct {
 	ext    *external
 	engine string
 
+	// want is the engine that was asked for, which is not always the one running: a helper that stalls is
+	// dropped for the built-in filter, and started again after a pause (see retry).
+	want     string
+	failedAt time.Time
+	upSince  time.Time
+	fails    int
+
 	// ref and mono are reused every frame; decoding into them keeps the audio path free of allocation.
 	ref  []int16
 	mono []int16
@@ -94,7 +102,7 @@ func (c *canceller) setEngine(name string) string {
 		c.ext.Close()
 		c.ext = nil
 	}
-	c.engine = "builtin"
+	c.engine, c.want, c.fails, c.failedAt = "builtin", name, 0, time.Time{}
 	if name != "webrtc" {
 		return c.engine
 	}
@@ -103,13 +111,53 @@ func (c *canceller) setEngine(name string) string {
 		slog.Warn("webrtc echo cancellation unavailable, using the built-in filter", "err", err)
 		return c.engine
 	}
-	c.ext, c.engine = e, "webrtc"
+	c.ext, c.engine, c.upSince = e, "webrtc", time.Now()
 	return c.engine
+}
+
+// How a helper that failed is brought back. It stalled once on a Show for a second, with the capture thread
+// starved at the same moment, and the canceller stayed on the built-in filter for the rest of the run, which in a
+// conversation with an open microphone is the device hearing itself. So it is started again after a pause, a longer
+// one each time it fails, and given up on after retryLimit failures without a minute of running between them.
+var retryBase = 3 * time.Second
+
+const retryLimit = 5
+
+// retryDue is whether a failed helper is to be started again now.
+func (c *canceller) retryDue(now time.Time) bool {
+	if c.ext != nil || c.want != "webrtc" || c.failedAt.IsZero() || c.fails > retryLimit {
+		return false
+	}
+	return now.Sub(c.failedAt) >= retryBase<<(c.fails-1)
+}
+
+// failed notes that the helper was dropped.
+func (c *canceller) failed(now time.Time) {
+	if !c.upSince.IsZero() && now.Sub(c.upSince) > time.Minute {
+		c.fails = 0 // it ran a good while first: a fresh start, not a streak
+	}
+	c.fails++
+	c.failedAt = now
+}
+
+// retry starts the helper again.
+func (c *canceller) retry(now time.Time) {
+	e, err := startExternal("--ns", "low")
+	if err != nil {
+		slog.Warn("webrtc echo cancellation could not be restarted", "err", err, "failures", c.fails)
+		c.failed(now)
+		return
+	}
+	c.ext, c.engine, c.upSince = e, "webrtc", now
+	slog.Info("webrtc echo cancellation restarted", "after_failures", c.fails)
 }
 
 // process runs one block through whichever engine is on. A helper that has died is dropped for
 // the built-in filter, once, with a log line.
 func (c *canceller) process(mic, ref []int16) ([]int16, float64, error) {
+	if now := time.Now(); c.retryDue(now) {
+		c.retry(now)
+	}
 	if c.ext != nil {
 		if c.ext.Healthy() {
 			out, err := c.ext.Process(mic, ref)
@@ -121,6 +169,7 @@ func (c *canceller) process(mic, ref []int16) ([]int16, float64, error) {
 		c.ext.Close()
 		c.ext = nil
 		c.engine = "builtin"
+		c.failed(time.Now())
 	}
 	out, err := c.filter.Process(mic, ref)
 	if err != nil {

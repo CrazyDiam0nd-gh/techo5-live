@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"testing"
@@ -113,12 +114,14 @@ func liveSetup(t *testing.T, run func(name, args string) string) (*liveBackend, 
 			Run:          run,
 		}
 	}
-	oldAfter := afterWork
-	afterWork = 0 // tests that look at the wait for the voice set it themselves
-	t.Cleanup(func() { liveURL, RealtimeKit, afterWork = "", oldKit, oldAfter })
+	oldAfter, oldBatch := afterWork, toolBatchWait
+	afterWork = 0                          // tests that look at the wait for the voice set it themselves
+	toolBatchWait = 100 * time.Millisecond // and the wait for the rest of a response's tool calls
+	t.Cleanup(func() { liveURL, RealtimeKit, afterWork, toolBatchWait = "", oldKit, oldAfter, oldBatch })
 
 	events := make(chan event, 512)
 	b := newLive(func(e event) { events <- e })
+	t.Cleanup(b.shutdown) // after the settings are put back, so before them: it runs first
 	if !b.Ready() {
 		t.Fatal("not ready")
 	}
@@ -713,7 +716,8 @@ func TestLiveAHeldPauseIsOneEvent(t *testing.T) {
 // the level it was spoken at.
 func TestLiveTheVoiceIsPlayedLouderWhenAsked(t *testing.T) {
 	level := func(boost int) float64 {
-		_, events, f := liveSetup(t, nil)
+		b, events, f := liveSetup(t, nil)
+		defer b.shutdown() // this test makes two: the first must be gone before the second starts
 		br := config.Get().Brain
 		br.LiveBoost = boost
 		if err := config.Set().Brain().Set(br); err != nil {
@@ -834,5 +838,67 @@ func TestKeepsWordsOnlyForALiveFollowUp(t *testing.T) {
 		if got := keepsWords(tc.be, tc.followUp); got != tc.want {
 			t.Errorf("keepsWords(%T, follow-up %v) = %v, want %v", tc.be, tc.followUp, got, tc.want)
 		}
+	}
+}
+
+// Two tools asked for at once are run together, every result goes back first, and the backend is asked to go on once:
+// asked to go on with a result missing, the server ends the turn (function_call_outputs_required), which is what
+// "dim the light and make it blue" did.
+func TestLiveTwoToolsAtOnceAreAnsweredTogether(t *testing.T) {
+	var mu sync.Mutex
+	ran := map[string]bool{}
+	_, events, f := liveSetup(t, func(name, args string) string {
+		mu.Lock()
+		defer mu.Unlock()
+		ran[name+args] = true
+		return "done: " + name
+	})
+	f.heard(" Make it dimmer and blue", 400)
+	f.send(map[string]any{"type": "session.delegation.created", "delegation": map[string]any{"id": "d"}})
+	call := func(id, name string) {
+		f.send(map[string]any{"type": "response.event", "delegation_id": "d", "event": map[string]any{
+			"type": "response.output_item.done", "item": map[string]any{
+				"type": "function_call", "call_id": id, "name": name, "arguments": "{}"}}})
+	}
+	call("c1", "brightness")
+	call("c2", "colour")
+	f.send(map[string]any{"type": "response.event", "delegation_id": "d", "event": map[string]any{"type": "response.completed"}})
+
+	var items []string
+	continues := 0
+	deadline := time.After(3 * time.Second)
+	for continues == 0 {
+		select {
+		case m := <-f.got:
+			switch m["type"] {
+			case "response.item.create":
+				it, _ := m["item"].(map[string]any)
+				items = append(items, it["call_id"].(string)+"="+it["output"].(string))
+			case "response.create":
+				continues++
+				if len(items) != 2 {
+					t.Fatalf("asked the backend to go on with %d of 2 results in: %v", len(items), items)
+				}
+			}
+		case <-deadline:
+			t.Fatalf("no continue; results so far %v", items)
+		}
+	}
+	sort.Strings(items)
+	if items[0] != "c1=done: brightness" || items[1] != "c2=done: colour" {
+		t.Errorf("results %v", items)
+	}
+	// And only once.
+	time.Sleep(300 * time.Millisecond)
+	for len(f.got) > 0 {
+		if m := <-f.got; m["type"] == "response.create" {
+			t.Error("asked the backend to go on twice")
+		}
+	}
+	_ = events
+	mu.Lock()
+	defer mu.Unlock()
+	if len(ran) != 2 {
+		t.Errorf("ran %v", ran)
 	}
 }
