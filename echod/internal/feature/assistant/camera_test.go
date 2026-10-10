@@ -104,3 +104,33 @@ func TestTheCameraToolIsOnlyForDevicesWithAScreen(t *testing.T) {
 	}
 	t.Error("forHouse withdrew the camera tool")
 }
+
+// The cameras of a real house: two of them begin with the same word.
+func TestARealHousesCameras(t *testing.T) {
+	cams := []config.Camera{
+		{Entity: "camera.alley_camera_stream", Name: "Alley Camera Stream"},
+		{Entity: "camera.front_camera_live", Name: "Front Camera Live"},
+		{Entity: "camera.garden_camera_live", Name: "Garden Camera Live"},
+		{Entity: "camera.alley_camera", Name: "Alley Camera"},
+		{Entity: "camera.show_camera", Name: "Show Camera"},
+		{Entity: "camera.galaxy_tab_a7_lite", Name: "Living Room Tablet (Fully Kiosk)"},
+	}
+	for query, want := range map[string]string{
+		"the alley camera":    "camera.alley_camera",
+		"alley":               "camera.alley_camera",
+		"alley camera stream": "camera.alley_camera_stream",
+		"the alley stream":    "camera.alley_camera_stream",
+		"front camera":        "camera.front_camera_live",
+		"front":               "camera.front_camera_live",
+		"garden":              "camera.garden_camera_live",
+		"living room tablet":  "camera.galaxy_tab_a7_lite",
+	} {
+		c, ok := pickCamera(query, cams)
+		if !ok || c.Entity != want {
+			t.Errorf("%q picked %q (%v), want %s", query, c.Entity, ok, want)
+		}
+	}
+	if c, ok := pickCamera("camera", cams); ok {
+		t.Errorf("a bare 'camera' picked %s", c.Entity)
+	}
+}

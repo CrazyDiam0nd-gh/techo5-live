@@ -82,15 +82,21 @@ func nameWords(s string) []string {
 	return strings.FieldsFunc(strings.ToLower(s), func(r rune) bool { return !unicode.IsLetter(r) && !unicode.IsDigit(r) })
 }
 
+// significant is the words of a name that tell one camera from another.
+func significant(s string) []string {
+	var out []string
+	for _, w := range nameWords(s) {
+		if !cameraWords[w] {
+			out = append(out, w)
+		}
+	}
+	return out
+}
+
 // pickCamera is the camera a name asked for: the one called exactly that, or the only one whose name (or
 // entity) holds every word that was said. Two that fit are not guessed between.
 func pickCamera(query string, cams []config.Camera) (config.Camera, bool) {
-	var want []string
-	for _, w := range nameWords(query) {
-		if !cameraWords[w] {
-			want = append(want, w)
-		}
-	}
+	want := significant(query)
 	if len(want) == 0 {
 		return config.Camera{}, false
 	}
@@ -107,8 +113,8 @@ func pickCamera(query string, cams []config.Camera) (config.Camera, bool) {
 		if !all {
 			continue
 		}
-		if strings.Join(nameWords(c.Name), " ") == strings.Join(want, " ") {
-			return c, true // called exactly that
+		if strings.Join(significant(c.Name), " ") == strings.Join(want, " ") {
+			return c, true // called exactly that, "Alley Camera" being the same as "alley"
 		}
 		fits = append(fits, c)
 	}
