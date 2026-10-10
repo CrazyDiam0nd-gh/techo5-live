@@ -10,6 +10,7 @@ package led
 // judged by whether it can be ignored, not by how much is happening.
 var ambientEffects = []Effect{
 	// In the ring's own color.
+	{Name: EffectSteady, New: steady},
 	{Name: EffectPulse, New: breathe},
 	{Name: EffectHeartbeat, New: heartbeat},
 	{Name: EffectRipple, New: ripple},

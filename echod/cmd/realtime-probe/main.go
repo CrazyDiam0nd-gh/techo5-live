@@ -23,7 +23,7 @@ func main() {
 	keyFile := flag.String("key-file", "", "file holding the OpenAI API key")
 	model := flag.String("model", "gpt-realtime-2.1-mini", "realtime model")
 	piper := flag.String("piper", "", "Wyoming TTS host:port")
-	voice := flag.String("voice", "en_US-example-medium", "voice for the reply")
+	voice := flag.String("voice", "", "voice for the reply (empty: the server's default)")
 	askVoice := flag.String("ask-voice", "", "voice for the question (default: same as -voice)")
 	say := flag.String("say", "What is the status of the ship?", "the question")
 	promptFile := flag.String("prompt-file", "", "file with the instructions")

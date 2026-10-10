@@ -88,6 +88,7 @@ type Effect struct {
 // that the list reads as what it is: the same handful of motions, in colors chosen for them.
 const (
 	// Ambient, in the ring's color.
+	EffectSteady       = "Steady"
 	EffectPulse        = "Pulse"
 	EffectHeartbeat    = "Heartbeat"
 	EffectRipple       = "Ripple"

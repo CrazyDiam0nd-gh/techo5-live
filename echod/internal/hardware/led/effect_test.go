@@ -41,8 +41,8 @@ func built(t *testing.T, e Effect, base Color) Frame {
 	return frame
 }
 
-// Whatever else an effect does, it has to be twelve colors, it has to change, and it has to light
-// something. A frame function that returns the wrong length fails the write for as long as the
+// Whatever else an effect does, it has to be twelve colors, it has to change (but a steady ring is meant
+// to stay as it is), and it has to light something. A frame function that returns the wrong length fails the write for as long as the
 // effect is up, and one that never changes or never lights anything is a broken effect that looks
 // exactly like a ring nobody has asked for anything.
 func TestEveryEffectAnimatesAndLightsTheRing(t *testing.T) {
@@ -64,8 +64,11 @@ func TestEveryEffectAnimatesAndLightsTheRing(t *testing.T) {
 			if !lit {
 				t.Error("never lights a segment")
 			}
-			if !moved {
+			if !moved && e.Name != EffectSteady {
 				t.Error("never changes")
+			}
+			if moved && e.Name == EffectSteady {
+				t.Error("a steady ring changes")
 			}
 		})
 	}

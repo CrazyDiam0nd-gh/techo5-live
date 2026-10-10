@@ -490,15 +490,17 @@ func (c *conversation) handle(e event) {
 		c.reported(e.at)
 		if c.phase == phaseReplying {
 			slot := c.slot
-			c.idle("spoken", activity.Completed)
 
 			// Continual conversation: the slot keeps listening after every reply, not only the ones
-			// Home Assistant asked to continue - as many times in a row as the slot allows.
+			// Home Assistant asked to continue - as many times in a row as the slot allows. Decided before
+			// the turn is closed, so that closing it knows another follows and leaves the ring and the
+			// speaker as they are.
 			limit := wakeword.FollowUps(slot)
 			if c.pending == nil && !c.lookHere && wakeword.FollowUp(slot) > 0 && (limit == 0 || c.followUps < limit) {
 				slog.Info("listening again after the reply", "slot", slot+1, "for", wakeword.FollowUp(slot))
 				c.pending = &nextTurn{slot: slot, followUp: true}
 			}
+			c.idle("spoken", activity.Completed)
 			c.startPending()
 		}
 
@@ -816,7 +818,11 @@ func (c *conversation) idle(why string, how activity.Outcome) {
 
 	mic.Get().HoldGain(false)
 	c.enter(phaseIdle)
-	c.claim.Clear()
+	// The ring is left lit when another turn is about to open, so a conversation is one light and not a
+	// light that blinks between its turns. It goes out when nothing follows.
+	if c.pending == nil {
+		c.claim.Clear()
+	}
 	c.player.Sounding(false)
 	c.reply = reply{}
 	c.hold(c.pending != nil)
@@ -855,6 +861,10 @@ func (c *conversation) startPending() {
 
 	if next != nil {
 		c.start(*next)
+		// A turn that could not open (the microphones are cut, say) leaves nothing to keep the ring lit.
+		if c.phase == phaseIdle {
+			c.claim.Clear()
+		}
 	}
 }
 
