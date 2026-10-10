@@ -263,6 +263,47 @@ the new level, and 0 (no night volume) puts it straight back. A muted device sta
 timers keep their own **Ring volume**. The Spotify and Music Assistant volume sliders do not move when
 night volume turns the device down.
 
+### Live conversation (OpenAI Realtime)
+
+Instead of Home Assistant's Assist pipeline, a device can hold a live conversation: it hears you through
+OpenAI's Realtime API, which decides when you have finished and writes the answer as it goes, and a
+text-to-speech server speaks it in the voice you choose. You can talk over it and it stops and listens.
+It also keeps listening for a follow-up, with the **Listening after an answer** settings.
+
+On the setup page (Sound & Voice → Voice assistant), set **Answered by** to *Live conversation (OpenAI
+Realtime)* and fill in:
+
+| Field | What to put |
+|---|---|
+| Text to speech | a Wyoming server, as Home Assistant's Piper add-on uses, as `host:port`. In Home Assistant, publish the add-on's port 10200 first (Settings → Add-ons → Piper → Configuration → Network). |
+| Voice | one of that server's voices. Leave it the same for every sentence: Piper reloads when the voice changes. |
+| Key | your OpenAI key. It is saved on the device, readable only by it, and never shown again. |
+| Model | a realtime model. Empty is `gpt-realtime-2.1-mini`. |
+| Anything the assistant should know | its manner, or the name and habits of the house. |
+
+Live conversation costs what the Realtime API costs: it is billed per audio minute. What you say is sent
+to OpenAI. Choose *Home Assistant* in the same list to go back; nothing else changes.
+
+**The house.** With Home Assistant access set up (step 1), the assistant can look at and operate the
+devices you expose to Home Assistant's own voice assistant (Settings → Voice assistants → Expose), and run
+its scripts. Nothing is set up on the device: exposing or hiding a device in Home Assistant is the whole of
+it, and a change is picked up within a few minutes. It can check a lock or the alarm but never operates
+them. A script is described to the assistant from its own name, description and fields, so write them as
+you would for Home Assistant's assistant ("Play an artist, album or song. Fields: name, device"). Music
+can be played, stopped and moved between any exposed media players; with no player named it plays on this
+device's own player, found by the device's name, so name the device as its player is named in Music
+Assistant.
+
+**Hearing you over its own voice.** The microphones stay open while it speaks, and the echo canceller keeps
+learning through the reply. A person is told from the device's own voice by what is left after canceling
+compared with what is playing at that moment, so you are heard in the gaps between words and not reliably
+in the middle of one. At a high volume the speaker can be louder than you are, and interrupting then needs a
+louder voice or a lower volume.
+
+**The light and the sound.** The wake word's **Effect** *Steady* keeps the whole ring lit from the wake word
+until the conversation is over (the follow-up window ending with nothing said). The wake sound can be your
+own recording (see Sounds of your own below).
+
 ### A wake word of your own
 
 Any microWakeWord model works, from a collection like

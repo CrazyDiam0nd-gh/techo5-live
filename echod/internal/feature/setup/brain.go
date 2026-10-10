@@ -12,6 +12,7 @@ import (
 
 	"github.com/HuskerMinion/techo5/echod/internal/config"
 	"github.com/HuskerMinion/techo5/echod/internal/feature/wakeword"
+	"github.com/HuskerMinion/techo5/echod/internal/lib/hass"
 )
 
 // listeningSection is how long the device listens again after an answer, and how many times in a row:
@@ -50,11 +51,16 @@ func brainSection(w http.ResponseWriter, token string) {
 	 <select id="mode" name="mode">
 	  <option value=""%s>Home Assistant (its Assist pipeline)</option>
 	  <option value="direct"%s>Speech and a chat model, directly</option>
+	  <option value="realtime"%s>Live conversation (OpenAI Realtime), which can be interrupted</option>
 	 </select>
 	 <p class="note">Directly, the device needs no Home Assistant: what is said goes to a speech-to-text
 	  server, the words to a chat model that can set timers and alarms, play the radio and call other
 	  devices, and the answer to a text-to-speech server. The servers are Wyoming ones, as Home Assistant
 	  uses (faster-whisper, Piper), and any chat model with an OpenAI-style endpoint (llama.cpp, Ollama).</p>
+	 <p class="note">Live conversation sends what is said to OpenAI, which listens, decides when you have finished
+	  and writes the answer as it goes; the text-to-speech server below speaks it, in the voice you choose, and
+	  talking over it stops it. It needs a text-to-speech server and an OpenAI key, and nothing else of the
+	  fields below except the model (a realtime model; empty is %s) and the extra instructions. %s</p>
 	 <label for="stt">Speech to text (host:port)</label>
 	 <input id="stt" name="stt" value="%s" placeholder="192.168.1.20:10300" autocomplete="off">
 	 <label for="tts">Text to speech (host:port)</label>
@@ -65,9 +71,9 @@ func brainSection(w http.ResponseWriter, token string) {
 	 <input id="language" name="language" value="%s" placeholder="en" maxlength="8" autocomplete="off">
 	 <label for="llm">Chat model endpoint</label>
 	 <input id="llm" name="llm" value="%s" placeholder="http://192.168.1.20:8080/v1" autocomplete="off">
-	 <label for="model">Model</label>
+	 <label for="model">Model (for live conversation, a realtime model)</label>
 	 <input id="model" name="model" value="%s" placeholder="only if the server has several" autocomplete="off">
-	 <label for="key">Key</label>
+	 <label for="key">Key (the chat endpoint's, or your OpenAI key for live conversation)</label>
 	 <input id="key" name="key" type="password" value="" placeholder="%s" autocomplete="off">
 	 <p><label><input type="checkbox" name="nokey" value="yes" style="width:auto"> Remove the key</label></p>
 	 <label for="search">Web search (a SearXNG server)</label>
@@ -77,10 +83,21 @@ func brainSection(w http.ResponseWriter, token string) {
 	 <label for="prompt">Anything the assistant should know</label>
 	 <textarea id="prompt" name="prompt" rows="3" maxlength="2000">%s</textarea>
 	 <p><button type="submit">Save</button></p></form></fieldset>`,
-		selected(b.Mode == config.BrainHomeAssistant), selected(b.Mode == config.BrainDirect),
+		selected(b.Mode == config.BrainHomeAssistant), selected(b.Mode == config.BrainDirect), selected(b.Mode == config.BrainRealtime),
+		config.DefaultRealtimeModel, houseNote(),
 		html.EscapeString(b.STT), html.EscapeString(b.TTS), html.EscapeString(b.Voice), html.EscapeString(b.Language),
 		html.EscapeString(b.LLM), html.EscapeString(b.Model), keyHint(b.Key != ""), html.EscapeString(b.Search),
 		html.EscapeString(b.Prompt))
+}
+
+// houseNote says whether live conversation can reach the house. Its tools (lights, music, scripts) use the
+// address and token Home Assistant gave the device when it was paired, and the devices the owner exposed
+// there to Home Assistant's own voice assistant.
+func houseNote() string {
+	if hass.Get().Ready() {
+		return "The house is connected: it can look at and operate whatever is exposed to Home Assistant's voice assistant."
+	}
+	return "The house is not connected, so it cannot look at or operate devices; Home Assistant gives the device its address and token when it is paired."
 }
 
 func keyHint(set bool) string {
@@ -105,7 +122,7 @@ func saveBrain(r *http.Request) string {
 		Search:   strings.TrimRight(v("search"), "/"),
 		Prompt:   strings.TrimSpace(r.PostFormValue("prompt")),
 	}
-	if b.Mode != config.BrainHomeAssistant && b.Mode != config.BrainDirect {
+	if b.Mode != config.BrainHomeAssistant && b.Mode != config.BrainDirect && b.Mode != config.BrainRealtime {
 		return "that is not a way of answering this device knows"
 	}
 	for _, hp := range []struct{ what, v string }{{"speech to text", b.STT}, {"text to speech", b.TTS}} {
@@ -130,6 +147,14 @@ func saveBrain(r *http.Request) string {
 	}
 	if b.Mode == config.BrainDirect && (b.STT == "" || b.TTS == "" || b.LLM == "") {
 		return "answering directly needs all three: speech to text, text to speech and the chat model"
+	}
+	if b.Mode == config.BrainRealtime {
+		// A key typed now, or one already kept and not being removed.
+		haveKey := strings.TrimSpace(r.PostFormValue("key")) != "" ||
+			(config.Get().Brain.Key != "" && r.PostFormValue("nokey") != "yes")
+		if b.TTS == "" || !haveKey {
+			return "live conversation needs a text-to-speech server and a key"
+		}
 	}
 	if strings.ContainsAny(b.Voice+b.Language+b.Model, "\r\n") {
 		return "the voice, language and model are one line each"
