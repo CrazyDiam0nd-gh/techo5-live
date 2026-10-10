@@ -19,6 +19,12 @@ import (
 // what lets this reach it and un-exposing it is what stops it. Locks and alarm panels can be read but
 // never commanded from here: a mis-heard word must not open a door.
 
+// resumeNote is what home_control is told about music that is paused or resumed with no player named: the
+// music is usually on some other player than the one that heard the request, and guessing this device
+// returned an error from a player with nothing in it.
+const resumeNote = "For play, pause, next and previous when the person has not said which player, look with home_status for the one that " +
+	"is playing or paused and use that one: do not assume it is this device. "
+
 // homeTimeout bounds one tool call, which a spoken turn waits on.
 const homeTimeout = 8 * time.Second
 
@@ -161,8 +167,7 @@ func homeTools() []tool {
 			"set_color (color), open, close, stop, set_position (value 0 to 100), set_temperature (value), set_volume (value 0 to 100), " +
 			"play, pause, next, previous, volume_up, volume_down, start, return_home, press, set_speed (value 0 to 100). " +
 			"For the volume of any player, including this device, name the player and use set_volume, volume_up or volume_down. " +
-			"For play, pause, next and previous when the person has not said which player, look with home_status for the one that " +
-			"is playing or paused and use that one: do not assume it is this device. " +
+			resumeNote +
 			"A scene or script is run with turn_on. " +
 			"If several devices match, the answer lists them: ask which one, or set all to true when they said all of them.",
 			Parameters: object(map[string]any{

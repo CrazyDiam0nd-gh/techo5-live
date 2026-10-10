@@ -365,13 +365,9 @@ func TestPausingWhateverIsPlayingStartsByLooking(t *testing.T) {
 			t.Errorf("the guidance lacks %q", want)
 		}
 	}
-	for _, tl := range tools() {
-		if tl.Name == "home_control" {
-			if !strings.Contains(tl.Description, "look with home_status for the one that is playing or paused") {
-				t.Errorf("home_control does not say so: %s", tl.Description)
-			}
-			return
+	for _, want := range []string{"look with home_status for the one that is playing or paused", "do not assume it is this device"} {
+		if !strings.Contains(resumeNote, want) {
+			t.Errorf("what home_control is told lacks %q", want)
 		}
 	}
-	t.Skip("no home_control tool in this build")
 }
