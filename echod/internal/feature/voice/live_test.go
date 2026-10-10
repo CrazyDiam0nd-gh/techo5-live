@@ -665,3 +665,18 @@ func TestRealWords(t *testing.T) {
 		}
 	}
 }
+
+func TestCleanSaidDropsSoundTags(t *testing.T) {
+	for in, want := range map[string]string{
+		"[breath] Done, the light is on.": "Done, the light is on.",
+		"Okay [laughs] that is funny":     "Okay that is funny",
+		"No tags here.":                   "No tags here.",
+		"[breath]":                        "",
+		"Keep [this one that is far too long to be a tag at all].": "Keep [this one that is far too long to be a tag at all].",
+		"  Spaces   ": "Spaces",
+	} {
+		if got := cleanSaid(in); got != want {
+			t.Errorf("cleanSaid(%q) = %q, want %q", in, got, want)
+		}
+	}
+}

@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"regexp"
 	"strings"
 	"sync"
 	"time"
@@ -464,7 +465,7 @@ func (b *liveBackend) onVoice(samples []int16) {
 	heard := strings.TrimSpace(b.heard.String())
 	var said string
 	if ended {
-		said = strings.TrimSpace(b.said.String())
+		said = cleanSaid(b.said.String())
 		b.speaking, b.held, b.silentMs, b.replyFrom, b.replyInMs = false, nil, 0, -1, -1
 		b.overlap.Reset()
 		b.said.Reset()
@@ -534,4 +535,13 @@ func realWords(s string) bool {
 		}
 	}
 	return false
+}
+
+// stageDirection is a bracketed word or two the model puts in its transcript for a sound it makes, like
+// [breath] or [laughs]. They belong to the audio, and on a screen or in the log they are noise.
+var stageDirection = regexp.MustCompile(`\s*\[[a-zA-Z ,'-]{1,24}\]\s*`)
+
+// cleanSaid is the model's transcript of its reply as text for the screen and the log.
+func cleanSaid(s string) string {
+	return strings.TrimSpace(stageDirection.ReplaceAllString(s, " "))
 }
