@@ -41,24 +41,25 @@ func soundRow(w http.ResponseWriter, token string, s speaker.OwnSound) {
 	var state string
 	switch {
 	case own:
-		state = fmt.Sprintf("your own, %.1f seconds", float64(ms)/1000)
+		state = fmt.Sprintf("<strong>&#10003; Your own sound</strong> &ndash; %s, %.1f seconds",
+			ownFile(s.Clip), float64(ms)/1000)
 	case s.Clip.HasStock():
-		state = fmt.Sprintf("built in, %.1f seconds", float64(s.Clip.StockMs())/1000)
+		state = fmt.Sprintf("Built-in sound, %.1f seconds", float64(s.Clip.StockMs())/1000)
 	default:
-		state = "a built-in tone"
+		state = "Built-in tone (there is no recording)"
 	}
-	fmt.Fprintf(w, `<div class="soundrow" data-name="%s" style="margin-top:1.1em">
-	 <strong>%s</strong> <span class="note">%s: %s</span>
-	 <input type="file" accept="audio/*" class="soundfile" aria-label="%s: choose an audio file">`,
-		html.EscapeString(s.Name), html.EscapeString(s.Label), html.EscapeString(s.When), html.EscapeString(state),
-		html.EscapeString(s.Label))
+	fmt.Fprintf(w, `<div class="soundrow" data-name="%s" style="margin-top:1.3em">
+	 <strong>%s</strong> <span class="note">%s</span>
+	 <p style="margin:.2em 0">In use now: %s</p>`,
+		html.EscapeString(s.Name), html.EscapeString(s.Label), html.EscapeString(s.When), state)
 	if s.Name == speaker.ClipWake.Name() && own && ms > longWake {
 		fmt.Fprint(w, `<p class="note" style="margin:0">This one is long. The microphone is held back while it plays,
 		 so the first words after the wake word are lost; say the request after the sound.</p>`)
 	}
-	fmt.Fprint(w, `<p class="soundsays note" style="margin:0"></p>
+	fmt.Fprintf(w, `<input type="file" accept="audio/*" class="soundfile" aria-label="%s: choose a new audio file">
+	 <p class="soundsays note" style="margin:0"></p>
 	 <audio class="soundheard" controls hidden></audio>
-	 <button type="button" class="sounduse" hidden>Use this sound</button>`)
+	 <button type="button" class="sounduse" hidden>Use this sound</button>`, html.EscapeString(s.Label))
 	if own || s.Clip.HasStock() {
 		fmt.Fprint(w, `<form method="post" action="/setup/save" style="display:inline">`)
 		hidden(w, token, "sound-play", "sound")
@@ -72,6 +73,16 @@ func soundRow(w http.ResponseWriter, token string, s speaker.OwnSound) {
 			html.EscapeString(s.Name))
 	}
 	fmt.Fprint(w, `</div>`)
+}
+
+// ownFile is how the page names the owner's recording: the file it was made from when that is known,
+// and the file the device keeps it in.
+func ownFile(c *speaker.Clip) string {
+	kept := html.EscapeString(c.OwnFile())
+	if from := c.OwnFrom(); from != "" {
+		return fmt.Sprintf("&ldquo;%s&rdquo; (kept as %s)", html.EscapeString(from), kept)
+	}
+	return kept
 }
 
 // soundScript is the page's side: choose a file, make the WAVE file, show it, send it. The WAVE
@@ -116,7 +127,7 @@ func soundScript(token string) string {
 	    if (!wav) return;
 	    use.disabled = true; say.textContent = 'Sending...';
 	    try {
-	      const fd = new FormData(); fd.append('token', TOKEN); fd.append('name', name); fd.append('sound', wav, name + '.wav');
+	      const fd = new FormData(); fd.append('token', TOKEN); fd.append('name', name); fd.append('sound', wav, name + '.wav'); fd.append('from', pick.files[0].name);
 	      const r = await fetch('/setup/sound', {method: 'POST', body: fd});
 	      if (r.ok) { say.textContent = 'Kept.'; setTimeout(() => location.reload(), 800); }
 	      else { say.textContent = await r.text(); use.disabled = false; }
@@ -176,7 +187,7 @@ func (f *Feature) sound(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "the sound did not arrive whole", http.StatusBadRequest)
 		return
 	}
-	if err := s.Clip.SaveOwn(b); err != nil {
+	if err := s.Clip.SaveOwnFrom(b, r.FormValue("from")); err != nil {
 		http.Error(w, "the device cannot play that: "+err.Error(), http.StatusBadRequest)
 		return
 	}

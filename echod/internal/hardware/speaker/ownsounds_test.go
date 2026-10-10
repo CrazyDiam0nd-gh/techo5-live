@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 // wavBytes is ms of a constant level as a WAVE file at rate.
@@ -119,5 +120,68 @@ func TestOwnSoundsAreTheKnownClips(t *testing.T) {
 	}
 	if !ClipWake.HasStock() || ClipFailure.HasStock() {
 		t.Error("the wake sound has a stock recording and the failure sound is a tone")
+	}
+}
+
+// The name a recording was made from is remembered with it, until the recording is replaced some other
+// way or removed.
+func TestTheNameOfTheSourceFileIsRemembered(t *testing.T) {
+	dir := ownSounds(t)
+	c := &Clip{file: "wake_word_triggered"}
+	if err := c.SaveOwnFrom(wavBytes(t, Rate, 1, 300), `C:\Users\me\Music\My chime.mp3`); err != nil {
+		t.Fatal(err)
+	}
+	if got := c.OwnFrom(); got != "My chime.mp3" {
+		t.Errorf("remembered %q", got)
+	}
+	if c.OwnFile() != "wake_word_triggered.wav" {
+		t.Errorf("kept in %q", c.OwnFile())
+	}
+
+	// A file put there by hand later is not given the old name.
+	writeWAV(t, filepath.Join(dir, "wake_word_triggered.wav"), Rate, 1, 200)
+	future := time.Now().Add(time.Hour)
+	_ = os.Chtimes(filepath.Join(dir, "wake_word_triggered.wav"), future, future)
+	if got := c.OwnFrom(); got != "" {
+		t.Errorf("a replaced file still carries %q", got)
+	}
+
+	// Saving without a name forgets the old one; removing takes both away.
+	if err := c.SaveOwnFrom(wavBytes(t, Rate, 1, 300), "a.wav"); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.SaveOwn(wavBytes(t, Rate, 1, 300)); err != nil {
+		t.Fatal(err)
+	}
+	if got := c.OwnFrom(); got != "" {
+		t.Errorf("a save with no name kept %q", got)
+	}
+	_ = c.SaveOwnFrom(wavBytes(t, Rate, 1, 300), "b.wav")
+	if err := c.RemoveOwn(); err != nil {
+		t.Fatal(err)
+	}
+	if entries, _ := os.ReadDir(dir); len(entries) != 0 {
+		t.Errorf("removing left %d files", len(entries))
+	}
+	if c.OwnFrom() != "" {
+		t.Error("a name outlived its recording")
+	}
+}
+
+func TestCleanName(t *testing.T) {
+	long := strings.Repeat("é", 200)
+	for in, want := range map[string]string{
+		"chime.mp3":          "chime.mp3",
+		"/home/me/chime.mp3": "chime.mp3",
+		`C:\x\chime.mp3`:     "chime.mp3",
+		"a\nb\x00c.wav":      "abc.wav",
+		"  spaced.wav  ":     "spaced.wav",
+		"dir/":               "",
+		"":                   "",
+		long:                 strings.Repeat("é", 80),
+	} {
+		if got := cleanName(in); got != want {
+			t.Errorf("cleanName(%q) = %q, want %q", in, got, want)
+		}
 	}
 }

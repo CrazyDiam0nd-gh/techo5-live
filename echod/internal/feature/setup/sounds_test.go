@@ -92,7 +92,7 @@ func TestASoundIsKeptAndRemoved(t *testing.T) {
 		t.Error("the device does not play the kept sound")
 	}
 	page := get(f, "/setup?tab=sound", c).Body.String()
-	for _, want := range []string{"Sounds of your own", "your own, 0.4 seconds", "Remove mine", `data-name="canceled"`} {
+	for _, want := range []string{"Sounds of your own", "In use now:", "Your own sound", "canceled.wav", "0.4 seconds", "Remove mine", `data-name="canceled"`} {
 		if !strings.Contains(page, want) {
 			t.Errorf("the page lacks %q", want)
 		}
@@ -240,5 +240,46 @@ func TestThePageScriptParses(t *testing.T) {
 	}
 	if b, err := exec.Command(node, "--check", p).CombinedOutput(); err != nil {
 		t.Fatalf("%v\n%s", err, b)
+	}
+}
+
+// The page names the file in use: the one it was made from when it came through the page, and the
+// stored file when it was copied there by hand, which carries no earlier name. A name with markup in it
+// is shown as text.
+func TestThePageNamesTheFileInUse(t *testing.T) {
+	f, c := letInBrowser(t)
+	var buf bytes.Buffer
+	mw := multipart.NewWriter(&buf)
+	_ = mw.WriteField("token", c.Value)
+	_ = mw.WriteField("name", "failure")
+	_ = mw.WriteField("from", `<b onclick=x>oops.mp3`)
+	fw, _ := mw.CreateFormFile("sound", "failure.wav")
+	_, _ = fw.Write(wav(48000, 1, 300))
+	_ = mw.Close()
+	r := httptest.NewRequest(http.MethodPost, "/setup/sound", &buf)
+	r.Header.Set("Content-Type", mw.FormDataContentType())
+	r.AddCookie(c)
+	w := httptest.NewRecorder()
+	f.serve(w, r)
+	if w.Code != http.StatusNoContent {
+		t.Fatal(w.Code, w.Body.String())
+	}
+	page := get(f, "/setup?tab=sound", c).Body.String()
+	if !strings.Contains(page, "&lt;b onclick=x&gt;oops.mp3") || strings.Contains(page, "<b onclick=x>") {
+		t.Error("the source file's name is missing or not escaped")
+	}
+	if !strings.Contains(page, "kept as failure.wav") {
+		t.Error("the stored file is not named")
+	}
+
+	if err := os.WriteFile(filepath.Join(speaker.SoundsDir, "mute_switch_on.wav"), wav(48000, 1, 250), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	page = get(f, "/setup?tab=sound", c).Body.String()
+	if !strings.Contains(page, "mute_switch_on.wav, 0.2 seconds") && !strings.Contains(page, "mute_switch_on.wav, 0.3 seconds") {
+		t.Errorf("a file put there by hand is not named plainly")
+	}
+	if !strings.Contains(page, "Built-in tone (there is no recording)") {
+		t.Error("a sound with no recording is not said to be a tone")
 	}
 }

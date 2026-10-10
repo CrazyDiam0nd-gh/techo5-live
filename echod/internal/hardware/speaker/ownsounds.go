@@ -4,6 +4,9 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
+	"strings"
+	"unicode"
 )
 
 // The sounds an owner may replace from the setup page, in the order it lists them.
@@ -62,7 +65,11 @@ func CheckOwn(b []byte) (ms int, err error) {
 // SaveOwn keeps b as the owner's recording for the clip. It is written beside its place and moved
 // into it, so a sound that is playing, or the device losing power half way, never meets half a file;
 // the clip notices the new file the next time it plays.
-func (c *Clip) SaveOwn(b []byte) error {
+func (c *Clip) SaveOwn(b []byte) error { return c.SaveOwnFrom(b, "") }
+
+// SaveOwnFrom is SaveOwn for a recording that was made from a file with a name worth remembering: the
+// setup page shows it beside the sound, since the device keeps the recording under the sound's name.
+func (c *Clip) SaveOwnFrom(b []byte, from string) error {
 	if _, err := CheckOwn(b); err != nil {
 		return err
 	}
@@ -89,12 +96,72 @@ func (c *Clip) SaveOwn(b []byte) error {
 	if err := tmp.Close(); err != nil {
 		return err
 	}
-	return os.Rename(tmp.Name(), filepath.Join(SoundsDir, c.file+".wav"))
+	if err := os.Rename(tmp.Name(), c.ownPath()); err != nil {
+		return err
+	}
+	c.rememberFrom(from)
+	return nil
 }
+
+// The name a recording came from is kept beside it as <sound>.from, with the time of the recording it
+// belongs to: a file put there by hand later has another time, and is not given the old name.
+func (c *Clip) fromPath() string { return filepath.Join(SoundsDir, c.file+".from") }
+
+func (c *Clip) rememberFrom(from string) {
+	from = cleanName(from)
+	info, err := os.Stat(c.ownPath())
+	if from == "" || err != nil {
+		_ = os.Remove(c.fromPath())
+		return
+	}
+	// Losing the name costs nothing but the name.
+	_ = os.WriteFile(c.fromPath(), []byte(strconv.FormatInt(info.ModTime().UnixNano(), 10)+"\n"+from+"\n"), 0o644)
+}
+
+// cleanName is a file name as far as it can be shown: no folders, no control characters, not long.
+func cleanName(name string) string {
+	name = strings.ReplaceAll(name, "\\", "/")
+	if i := strings.LastIndex(name, "/"); i >= 0 {
+		name = name[i+1:]
+	}
+	name = strings.Map(func(r rune) rune {
+		if unicode.IsControl(r) {
+			return -1
+		}
+		return r
+	}, name)
+	name = strings.TrimSpace(name)
+	if r := []rune(name); len(r) > 80 {
+		name = string(r[:80])
+	}
+	return name
+}
+
+// OwnFrom is the name of the file the owner's recording was made from, when it was kept from the setup
+// page and has not been replaced since; empty otherwise.
+func (c *Clip) OwnFrom() string {
+	info, err := os.Stat(c.ownPath())
+	if err != nil {
+		return ""
+	}
+	b, err := os.ReadFile(c.fromPath())
+	if err != nil {
+		return ""
+	}
+	when, name, ok := strings.Cut(strings.TrimSpace(string(b)), "\n")
+	if !ok || when != strconv.FormatInt(info.ModTime().UnixNano(), 10) {
+		return ""
+	}
+	return name
+}
+
+// OwnFile is the file the recording is kept in, by name only.
+func (c *Clip) OwnFile() string { return c.file + ".wav" }
 
 // RemoveOwn takes the owner's recording away, which puts the stock sound back. Having none is not
 // a failure.
 func (c *Clip) RemoveOwn() error {
+	_ = os.Remove(c.fromPath())
 	if err := os.Remove(c.ownPath()); err != nil && !os.IsNotExist(err) {
 		return err
 	}
