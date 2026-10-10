@@ -112,7 +112,7 @@ func instructionsForLive(k Kit) string {
 	sb.WriteString("\n\nYou are talking with someone out loud, in real time, and they may interrupt you. " +
 		"Keep replies to one or two short spoken sentences. Never use lists or markdown. " +
 		"Delegate to the backend whenever the request is about the current time or date, timers, alarms, " +
-		"volume, the weather, music or the radio, or anything about the house and its devices, and whenever " +
+		"volume, the weather, music or the radio, the screen or the cameras, or anything about the house and its devices, and whenever " +
 		"someone asks you to change any of them. Delegate before giving an answer that depends on backend " +
 		"work, and do not guess the result while you wait: say nothing while the backend works, then give " +
 		"the result in one short sentence. Never say Checking, Working or anything like it before or while " +

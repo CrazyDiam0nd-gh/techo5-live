@@ -332,6 +332,7 @@ func build() *Display {
 	btaudio.Get().Changed.Listen(func(btaudio.State) { d.wake() })
 	d.listenDashboard()
 	assistant.SetScreen(d.showPageSpot)
+	assistant.SetCameraShower(func(entity string) { home.Get().ShowCamera(entity, cameraScreenTime()) })
 	phone.Get().Changed.Listen(d.callLights)
 	// The mute button toggles the mute on the buttons' goroutine; redraw once it has.
 	buttons.Get().Events.Listen(func(buttons.Event) {

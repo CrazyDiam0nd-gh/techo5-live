@@ -440,6 +440,7 @@ func build() *Display {
 	deck.Get().Changed.Listen(d.deckChanged)
 	video.Get().Changed.Listen(func(struct{}) { d.wake() })
 	assistant.SetScreen(d.showPage)
+	assistant.SetCameraShower(func(entity string) { home.Get().ShowCamera(entity, cameraScreenTime()) })
 	return d
 }
 
