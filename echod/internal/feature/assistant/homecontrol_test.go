@@ -91,6 +91,10 @@ func TestControlValues(t *testing.T) {
 	if _, err, _ := control(t, "nest", "set_temperature", 80, true, false); err == nil {
 		t.Error("80 degrees accepted")
 	}
+	_, err, calls = control(t, "home theater", "volume_up", 0, false, false)
+	if err != nil || calls[0].service != "volume_up" || calls[0].data["entity_id"] != "media_player.home_theater" {
+		t.Errorf("volume_up: err=%v calls=%v", err, calls)
+	}
 	_, err, calls = control(t, "home theater", "set_volume", 35, true, false)
 	if err != nil || calls[0].data["volume_level"] != 0.35 {
 		t.Errorf("err=%v calls=%v", err, calls)

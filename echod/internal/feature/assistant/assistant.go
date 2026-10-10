@@ -286,12 +286,13 @@ func buildGuidance() string {
 // which to use did not hold, so it is not given the choice. Silencing a ringing alarm or timer needs no
 // tool: the conversation does it when it hears "stop" while one is sounding. The device's weather
 // needs a location of its own, which a speaker without a screen does not have; the house's weather source
-// (home_weather) is the one to ask.
+// (home_weather) is the one to ask. And its set_volume is the device's own speaker alone: asked to turn
+// another player up, the model set the Dot to maximum. Volume is home_control's, on any named player.
 func forHouse(ts []tool) []tool {
 	out := make([]tool, 0, len(ts))
 	for _, t := range ts {
 		switch t.Name {
-		case "play_music", "stop", "weather":
+		case "play_music", "stop", "weather", "set_volume":
 			continue
 		}
 		out = append(out, t)

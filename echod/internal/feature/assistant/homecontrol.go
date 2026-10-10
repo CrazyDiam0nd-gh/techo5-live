@@ -145,7 +145,9 @@ func homeTools() []tool {
 		{llm.Tool{Name: "home_control", Description: "Operate a device in the house. device is words from its name or room " +
 			"(like 'kitchen island', 'bedroom blind'); action is one of: turn_on, turn_off, toggle, set_brightness (value 0 to 100), " +
 			"set_color (color), open, close, stop, set_position (value 0 to 100), set_temperature (value), set_volume (value 0 to 100), " +
-			"play, pause, next, previous, start, return_home, press, set_speed (value 0 to 100). A scene or script is run with turn_on. " +
+			"play, pause, next, previous, volume_up, volume_down, start, return_home, press, set_speed (value 0 to 100). " +
+			"For the volume of any player, including this device, name the player and use set_volume, volume_up or volume_down. " +
+			"A scene or script is run with turn_on. " +
 			"If several devices match, the answer lists them: ask which one, or set all to true when they said all of them.",
 			Parameters: object(map[string]any{
 				"device": str("Words from the device's name or room."),
@@ -420,6 +422,10 @@ func plan(e hass.Exposed, action string, value float64, hasValue bool, color str
 				return service{}, err
 			}
 			return svc("volume_set", map[string]any{"volume_level": float64(p) / 100}, fmt.Sprintf("volume %d percent", p))
+		case "volume_up":
+			return svc("volume_up", nil, "volume up")
+		case "volume_down":
+			return svc("volume_down", nil, "volume down")
 		}
 	case "vacuum":
 		switch action {
