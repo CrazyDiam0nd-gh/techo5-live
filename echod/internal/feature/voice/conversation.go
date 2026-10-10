@@ -1175,7 +1175,8 @@ func (c *conversation) stream(ctx context.Context, be backend, slot int, followU
 			see(frame)
 			if keeps && c.Phase() == phaseReplying {
 				// Its own voice is playing: send what is clearly someone else (echoGate).
-				for _, f := range gate.Feed(append([]int16(nil), frame...)) {
+				src := c.source
+				for _, f := range gate.Feed(append([]int16(nil), frame...), src.OverEcho(), src.EchoResidual()) {
 					c.sendAudio(be, int16Bytes(f))
 				}
 				continue

@@ -72,6 +72,9 @@ type canceller struct {
 
 	// hold counts down the samples still to filter after the loopback went quiet. Reader-only.
 	hold int
+
+	// meter says whether what is left after canceling is more than echo (echoMeter).
+	meter echoMeter
 }
 
 func newCanceller() *canceller {
@@ -145,6 +148,7 @@ func (c *canceller) apply(raw []byte, mic []int16) []int16 {
 	default:
 		// Nothing to cancel. The filter keeps what it learned: the room has not changed just because
 		// the reply ended, so the next one starts converged rather than from nothing.
+		c.meter.reset()
 		if c.active.Swap(false) {
 			slog.Info("echo cancellation idle",
 				"best_db", float64(c.best.Load())/1000, "last_db", float64(c.erle.Load())/1000)
@@ -164,6 +168,7 @@ func (c *canceller) apply(raw []byte, mic []int16) []int16 {
 		slog.Error("echo cancellation failed", "err", err)
 		return nil
 	}
+	c.meter.feed(c.ref, out)
 	erle := int64(erleDB * 1000)
 	c.erle.Store(erle)
 	if erle > c.best.Load() {
@@ -282,3 +287,17 @@ func (s *Source) SetAdapting(on bool) {
 // the device is speaking, and the echo left after canceling is above the room's floor, so the leveler
 // would take it for speech and bring it up to the loudness of someone talking.
 func (s *Source) HoldGain(on bool) { s.leveler.held.Store(on) }
+
+// OverEcho says that what the microphone hears while the device plays is more than the echo of it:
+// someone is talking over the device. False when nothing is playing.
+func (s *Source) OverEcho() bool {
+	return s.cancel != nil && s.cancel.meter.over.Load()
+}
+
+// EchoResidual is the level of what is left after canceling, in RMS of 16-bit samples, for the log.
+func (s *Source) EchoResidual() float64 {
+	if s.cancel == nil {
+		return 0
+	}
+	return math.Float64frombits(s.cancel.meter.level.Load())
+}
