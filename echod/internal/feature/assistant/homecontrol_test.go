@@ -161,28 +161,28 @@ func TestScriptLine(t *testing.T) {
 }
 
 func TestPlayOnAnotherPlayer(t *testing.T) {
-	list := append(house(), hass.Exposed{ID: "media_player.pop_os_6", Domain: "media_player", Name: "Pop!_OS", State: "idle"})
+	list := append(house(), hass.Exposed{ID: "media_player.office_pc", Domain: "media_player", Name: "Office PC", State: "idle"})
 	var calls []call
 	rec := func(d, s string, data map[string]any) error { calls = append(calls, call{d, s, data}); return nil }
 
-	out, err := playOnPlayer(list, "Pink Floyd", "artist", "desk pc", false, rec)
-	if err != nil || !strings.Contains(out, "Pop!_OS") {
+	out, err := playOnPlayer(list, "Pink Floyd", "artist", "office pc", false, rec)
+	if err != nil || !strings.Contains(out, "Office PC") {
 		t.Fatalf("out=%q err=%v", out, err)
 	}
 	if len(calls) != 2 || calls[1].domain != "music_assistant" || calls[1].service != "play_media" ||
-		calls[1].data["entity_id"] != "media_player.pop_os_6" || calls[1].data["media_id"] != "Pink Floyd" {
+		calls[1].data["entity_id"] != "media_player.office_pc" || calls[1].data["media_id"] != "Pink Floyd" {
 		t.Errorf("%+v", calls)
 	}
 	// A kind it does not know is an artist.
 	calls = nil
-	if _, err := playOnPlayer(list, "Money", "song", "desk pc", true, rec); err != nil || calls[1].data["media_type"] != "artist" || calls[0].data["shuffle"] != true {
+	if _, err := playOnPlayer(list, "Money", "song", "office pc", true, rec); err != nil || calls[1].data["media_type"] != "artist" || calls[0].data["shuffle"] != true {
 		t.Errorf("%v %+v", err, calls)
 	}
 	// Only media players: a light is not one.
 	if _, err := playOnPlayer(list, "x", "artist", "kitchen island", false, rec); err == nil {
 		t.Error("played music on a light")
 	}
-	if _, err := playOnPlayer(list, "", "artist", "desk pc", false, rec); err == nil {
+	if _, err := playOnPlayer(list, "", "artist", "office pc", false, rec); err == nil {
 		t.Error("played nothing")
 	}
 }
@@ -190,7 +190,7 @@ func TestPlayOnAnotherPlayer(t *testing.T) {
 func TestStopMusicStopsEverythingPlaying(t *testing.T) {
 	list := []hass.Exposed{
 		{ID: "media_player.dot", Domain: "media_player", Name: "Dot", State: "playing"},
-		{ID: "media_player.pop_os", Domain: "media_player", Name: "Pop!_OS", State: "paused"},
+		{ID: "media_player.office_pc", Domain: "media_player", Name: "Office PC", State: "paused"},
 		{ID: "media_player.home_theater", Domain: "media_player", Name: "Home Theater", State: "off"},
 		{ID: "light.x", Domain: "light", Name: "X", State: "playing"},
 	}
@@ -203,11 +203,11 @@ func TestStopMusicStopsEverythingPlaying(t *testing.T) {
 		return nil
 	}
 	out, err := stopMusic(list, "", rec)
-	if err != nil || len(stopped) != 2 || stopped[0] != "media_player.dot" || stopped[1] != "media_player.pop_os" || !strings.Contains(out, "Pop!_OS") {
+	if err != nil || len(stopped) != 2 || stopped[0] != "media_player.dot" || stopped[1] != "media_player.office_pc" || !strings.Contains(out, "Office PC") {
 		t.Errorf("out=%q err=%v stopped=%v", out, err, stopped)
 	}
 	stopped = nil
-	if _, err := stopMusic(list, "desk pc", rec); err != nil || len(stopped) != 1 {
+	if _, err := stopMusic(list, "office pc", rec); err != nil || len(stopped) != 1 {
 		t.Errorf("named: %v %v", err, stopped)
 	}
 	stopped = nil
@@ -219,7 +219,7 @@ func TestStopMusicStopsEverythingPlaying(t *testing.T) {
 func TestMoveMusic(t *testing.T) {
 	list := []hass.Exposed{
 		{ID: "media_player.dot", Domain: "media_player", Name: "Dot", State: "idle"},
-		{ID: "media_player.pop_os", Domain: "media_player", Name: "Pop!_OS", State: "playing"},
+		{ID: "media_player.office_pc", Domain: "media_player", Name: "Office PC", State: "playing"},
 		{ID: "media_player.home_theater", Domain: "media_player", Name: "Home Theater", State: "off"},
 	}
 	var calls []call
@@ -228,8 +228,8 @@ func TestMoveMusic(t *testing.T) {
 	// "Bring it here": no destination, the device that heard is the Dot.
 	out, err := moveMusic(list, "", "", "Dot", rec)
 	if err != nil || len(calls) != 1 || calls[0].service != "transfer_queue" ||
-		calls[0].data["entity_id"] != "media_player.dot" || calls[0].data["source_player"] != "media_player.pop_os" ||
-		!strings.Contains(out, "from Pop!_OS to Dot") {
+		calls[0].data["entity_id"] != "media_player.dot" || calls[0].data["source_player"] != "media_player.office_pc" ||
+		!strings.Contains(out, "from Office PC to Dot") {
 		t.Fatalf("out=%q err=%v calls=%+v", out, err, calls)
 	}
 
@@ -240,7 +240,7 @@ func TestMoveMusic(t *testing.T) {
 	}
 
 	// Already there, and nothing playing.
-	if _, err := moveMusic(list, "desk pc", "desk pc", "Dot", rec); err == nil {
+	if _, err := moveMusic(list, "office pc", "office pc", "Dot", rec); err == nil {
 		t.Error("moved music onto itself")
 	}
 	idle := []hass.Exposed{list[0], list[2]}

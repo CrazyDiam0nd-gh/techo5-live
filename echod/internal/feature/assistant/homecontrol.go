@@ -73,7 +73,7 @@ func homeTools() []tool {
 			Parameters: object(map[string]any{
 				"name":    str("The artist, album, track or playlist to play."),
 				"kind":    str("artist, album, track or playlist. Artist for 'play X' or 'songs by X'."),
-				"player":  str("Words from the name of the media player to play it on, like 'desk pc'."),
+				"player":  str("Words from the name of the media player to play it on, like 'office pc'."),
 				"shuffle": map[string]any{"type": "boolean", "description": "Only if the person says shuffle."},
 			}, "name")},
 			func(a map[string]any) (string, error) {
@@ -92,7 +92,7 @@ func homeTools() []tool {
 			}},
 
 		{llm.Tool{Name: "home_move_music", Description: "Move the music that is playing to another speaker or computer, " +
-			"carrying on where it was: 'move the music to the home theater', 'bring it here', 'send this to the PC'. " +
+			"carrying on where it was: 'move the music to the home theater', 'bring it here', 'send this to the office PC'. " +
 			"to is words from the player's name; leave it out to bring the music to the device being talked to. " +
 			"from is the player it is on, only needed when more than one is playing.",
 			Parameters: object(map[string]any{
