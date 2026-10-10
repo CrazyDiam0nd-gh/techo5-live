@@ -90,7 +90,13 @@ func homeTools() []tool {
 				if player == "" {
 					player = config.Get().Device.Name // the device that heard the request
 				}
-				return playOnPlayer(list, argString(a, "name"), argString(a, "kind"), player, shuffle, hass.Get().Service)
+				out, err := playOnPlayer(list, argString(a, "name"), argString(a, "kind"), player, shuffle, hass.Get().Service)
+				if err != nil && slowAnswer(err) {
+					// Music Assistant searches its library before it plays, which can outlast the wait. That is not a
+					// failure to report: the music may start in a moment.
+					return "Music Assistant has not answered yet. It may still start playing, so do not say it failed: say it is taking a while.", nil
+				}
+				return out, err
 			}},
 
 		{llm.Tool{Name: "home_move_music", Description: "Move the music that is playing to another speaker or computer, " +
@@ -789,4 +795,13 @@ func stoppedHere(player, device string) bool {
 		return true
 	}
 	return device != "" && (strings.Contains(device, player) || strings.Contains(player, device))
+}
+
+// slowAnswer is whether an error is the wait running out rather than the request being refused.
+func slowAnswer(err error) bool {
+	if errors.Is(err, context.DeadlineExceeded) {
+		return true
+	}
+	m := strings.ToLower(err.Error())
+	return strings.Contains(m, "deadline exceeded") || strings.Contains(m, "client.timeout") || strings.Contains(m, "timeout")
 }

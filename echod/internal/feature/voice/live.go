@@ -65,18 +65,19 @@ type liveBackend struct {
 	gen uint64
 
 	// The turn in progress.
-	heard       strings.Builder // what the person said
-	said        strings.Builder // what the model said, as text
-	heardPosted bool
-	heardEndMs  int             // where the person's last word ended on the session's clock
-	sentMs      int             // how much microphone audio the session has been sent: the same clock
-	replyInMs   int             // sentMs when the model began to answer; -1 before
-	overlap     strings.Builder // what the person has said since the model began to speak
-	speaking    bool            // voiced audio is flowing
-	silentMs    int             // the pause so far inside a reply
-	held        [][]int16       // the pause, kept back in case speech resumes (at 16 kHz)
-	dropping    bool            // the tail of a reply that was talked over: dropped until it goes quiet
-	replyFrom   int             // the model's clock when it began to speak, in ms; -1 before it has
+	heard          strings.Builder // what the person said
+	said           strings.Builder // what the model said, as text
+	heardPosted    bool
+	heardEndMs     int             // where the person's last word ended on the session's clock
+	thinkingPosted bool            // the conversation has been told the request is with the backend
+	sentMs         int             // how much microphone audio the session has been sent: the same clock
+	replyInMs      int             // sentMs when the model began to answer; -1 before
+	overlap        strings.Builder // what the person has said since the model began to speak
+	speaking       bool            // voiced audio is flowing
+	silentMs       int             // the pause so far inside a reply
+	held           [][]int16       // the pause, kept back in case speech resumes (at 16 kHz)
+	dropping       bool            // the tail of a reply that was talked over: dropped until it goes quiet
+	replyFrom      int             // the model's clock when it began to speak, in ms; -1 before it has
 	// The backend is working while a tool runs, and for a few seconds after it last did anything:
 	// the model is silent while it waits, and that is not the end of what it has to say. It has
 	// finished when a response completes that asked for no tool; one that asked for a tool completes
@@ -181,7 +182,7 @@ func (b *liveBackend) Start(string) error {
 func (b *liveBackend) newTurn() {
 	b.heard.Reset()
 	b.said.Reset()
-	b.heardPosted, b.speaking, b.dropping = false, false, false
+	b.heardPosted, b.speaking, b.dropping, b.thinkingPosted = false, false, false, false
 	b.silentMs, b.held, b.replyFrom, b.replyInMs = 0, nil, -1, -1
 	b.workUntil, b.callInResp = time.Time{}, false
 	b.res.Reset()
@@ -349,8 +350,16 @@ func (b *liveBackend) handle(cl *live.Client, e live.Event) {
 	case "session.delegation.created":
 		b.mu.Lock()
 		b.workUntil = time.Now().Add(workGrace)
+		// The request is with the backend, which may take a while (a library search ran for 25 s): the person has
+		// finished, so the conversation is told to think, and its limit on listening cannot end the turn
+		// under a tool still working. The words themselves are sent with the first of the reply.
+		first := !b.heardPosted && !b.thinkingPosted && b.active
+		b.thinkingPosted = true
 		b.mu.Unlock()
 		slog.Info("live: the model handed the request to the backend")
+		if first {
+			b.post(event{kind: evHeard})
+		}
 
 	case "response.event":
 		call, isCall := e.FunctionCall()
@@ -406,7 +415,7 @@ func (b *liveBackend) onHeard(e live.Event) {
 		b.heard.Reset()
 		b.heard.WriteString(b.overlap.String())
 		b.overlap.Reset()
-		b.heardPosted, b.replyFrom, b.replyInMs = false, -1, -1
+		b.heardPosted, b.replyFrom, b.replyInMs, b.thinkingPosted = false, -1, -1, false
 		b.workUntil, b.callInResp = time.Time{}, false
 		b.res.Reset()
 	}
@@ -471,7 +480,7 @@ func (b *liveBackend) onVoice(samples []int16) {
 		b.overlap.Reset()
 		b.said.Reset()
 		b.heard.Reset()
-		b.heardPosted = false
+		b.heardPosted, b.thinkingPosted = false, false
 	}
 	b.mu.Unlock()
 

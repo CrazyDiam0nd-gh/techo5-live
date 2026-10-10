@@ -765,3 +765,57 @@ func TestOwnVoicePlayingOnlyInTheModesThatKeepTheMicrophoneOpen(t *testing.T) {
 		v.turn.visible.Store(int32(phaseIdle))
 	}
 }
+
+// A person still talking is not gone: speech heard re-arms the limit on listening for the live model, so a long
+// request is not dropped as "nothing said" while it is being made. The other pipelines are left as they were.
+func TestSpeakingReArmsTheListeningLimitOnlyForTheLiveModel(t *testing.T) {
+	c := thinkingTurn(t)
+	c.followUp = false
+	for _, tc := range []struct {
+		name  string
+		be    backend
+		rearm bool
+	}{
+		{"live", c.live, true},
+		{"home assistant", c.ha, false},
+		{"realtime", c.realtime, false},
+	} {
+		c.be = tc.be
+		c.enter(phaseListening)
+		c.arm(time.Hour)
+		before := c.deadline
+		c.handle(event{kind: evSpeaking})
+		if got := c.deadline != before; got != tc.rearm {
+			t.Errorf("%s: re-armed = %v, want %v", tc.name, got, tc.rearm)
+		}
+	}
+}
+
+// Handing the request to the backend tells the conversation the person is done, once, before anything is said: a
+// slow tool must not run into the limit on listening.
+func TestLiveHandingOverMovesTheConversationOn(t *testing.T) {
+	_, events, f := liveSetup(t, nil)
+	f.heard(" Play something", 400)
+	f.send(map[string]any{"type": "session.delegation.created", "delegation": map[string]any{"id": "d"}})
+	f.send(map[string]any{"type": "session.delegation.created", "delegation": map[string]any{"id": "e"}}) // a second one
+	got := waitFor(t, events, evHeard)
+	if got[len(got)-1].text != "" {
+		t.Errorf("the hand-over carried text %q", got[len(got)-1].text)
+	}
+	time.Sleep(150 * time.Millisecond)
+	for len(events) > 0 {
+		if e := <-events; e.kind == evHeard {
+			t.Error("told twice that the person was done")
+		}
+	}
+	// The words still come, with the first of the reply, once the backend has finished.
+	f.send(map[string]any{"type": "response.event", "delegation_id": "d", "event": map[string]any{"type": "response.completed"}})
+	f.said(" Sure.", 5000)
+	f.voice(true, 3)
+	f.voice(false, 14)
+	for _, e := range waitFor(t, events, evStreamEnd) {
+		if e.kind == evHeard && e.text != "Play something" {
+			t.Errorf("heard %q", e.text)
+		}
+	}
+}

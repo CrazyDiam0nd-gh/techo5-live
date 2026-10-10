@@ -1,6 +1,9 @@
 package assistant
 
 import (
+	"context"
+	"errors"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -327,5 +330,29 @@ func TestAStopCoversThisDeviceOnlyWhenItDoes(t *testing.T) {
 		if got := stoppedHere(c.player, c.device); got != c.want {
 			t.Errorf("stoppedHere(%q, %q) = %v, want %v", c.player, c.device, got, c.want)
 		}
+	}
+}
+
+func TestASlowAnswerIsNotAFailure(t *testing.T) {
+	for _, err := range []error{
+		context.DeadlineExceeded,
+		fmt.Errorf("pop-os: %w", context.DeadlineExceeded),
+		errors.New(`Post "http://x/api/services/music_assistant/play_media": net/http: request canceled (Client.Timeout exceeded while awaiting headers)`),
+		errors.New("context deadline exceeded"),
+	} {
+		if !slowAnswer(err) {
+			t.Errorf("%v was taken for a refusal", err)
+		}
+	}
+	for _, err := range []error{errors.New("no media player matches \"x\""), errors.New("several players match: a; b. Ask which")} {
+		if slowAnswer(err) {
+			t.Errorf("%v was taken for a slow answer", err)
+		}
+	}
+}
+
+func TestTheModelIsToldMusicIsNotAScriptThatStartsAComputer(t *testing.T) {
+	if g := buildGuidance(); !strings.Contains(g, "never answered by a script that starts or controls a computer") {
+		t.Errorf("the guidance does not say so: %s", g)
 	}
 }

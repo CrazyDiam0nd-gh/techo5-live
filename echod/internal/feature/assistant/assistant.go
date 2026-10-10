@@ -283,7 +283,9 @@ func buildGuidance() string {
 		"use them for any music request, and never the device's own play_music, play_radio, stop or set_volume tools for " +
 		"that. To stop music use home_stop_music, which stops every player unless one is named. The music scripts know only the Dot and the home " +
 		"theater: to play on any other player, such as a computer, use home_play_music. To move playing music to " +
-		"another player, or bring it to this device, use home_move_music."
+		"another player, or bring it to this device, use home_move_music. A request to play music, on a computer " +
+		"or any other player, is never answered by a script that starts or controls a computer: \"play Pearl Jam on the office PC\" " +
+		"is music, so play it."
 	c, devices := scriptCatalog()
 	name := config.Get().Device.Name
 	switch own, listed := ownScriptDevice(name, devices); {

@@ -354,7 +354,10 @@ func (c *conversation) handle(e event) {
 		c.start(nextTurn{slot: e.slot})
 
 	case evSpeaking:
-		if c.followUp && c.phase == phaseListening {
+		// Speech heard re-arms the limit on listening: in a follow-up, and with the live model, which hears the
+		// person itself and so is told of every word. Without it a request longer than the limit from the wake
+		// word was dropped as "nothing said" while the person was still saying it.
+		if (c.followUp || isLive(c.be)) && c.phase == phaseListening {
 			c.arm(wakeword.MaxListen(c.slot))
 		}
 
@@ -1289,4 +1292,10 @@ func int16Bytes(s []int16) []byte {
 func quietFollowUp(be backend, followUp bool) bool {
 	_, live := be.(*liveBackend)
 	return followUp && live
+}
+
+// isLive is whether a backend is the live model.
+func isLive(be backend) bool {
+	_, ok := be.(*liveBackend)
+	return ok
 }
