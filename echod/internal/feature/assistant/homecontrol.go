@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/HuskerMinion/techo5/echod/internal/config"
 	"github.com/HuskerMinion/techo5/echod/internal/lib/hass"
 	"github.com/HuskerMinion/techo5/echod/internal/lib/llm"
 )
@@ -67,13 +68,14 @@ func homeTools() []tool {
 
 		{llm.Tool{Name: "home_play_music", Description: "Play music on any speaker or computer in the house through Music Assistant, " +
 			"by name: an artist, album, track or playlist. Use this when the person names a player the music scripts do not know (the " +
-			"scripts know the Dot and the home theater); for those, use the scripts. player is words from the media player's name.",
+			"scripts know the Dot and the home theater); for those, use the scripts. player is words from the media player's name; " +
+			"leave it out to play on the device that is being talked to.",
 			Parameters: object(map[string]any{
 				"name":    str("The artist, album, track or playlist to play."),
 				"kind":    str("artist, album, track or playlist. Artist for 'play X' or 'songs by X'."),
 				"player":  str("Words from the name of the media player to play it on, like 'desk pc'."),
 				"shuffle": map[string]any{"type": "boolean", "description": "Only if the person says shuffle."},
-			}, "name", "player")},
+			}, "name")},
 			func(a map[string]any) (string, error) {
 				ctx, cancel := context.WithTimeout(context.Background(), scriptTimeout)
 				defer cancel()
@@ -82,7 +84,11 @@ func homeTools() []tool {
 					return "", err
 				}
 				shuffle, _ := a["shuffle"].(bool)
-				return playOnPlayer(list, argString(a, "name"), argString(a, "kind"), argString(a, "player"), shuffle, hass.Get().Service)
+				player := argString(a, "player")
+				if player == "" {
+					player = config.Get().Device.Name // the device that heard the request
+				}
+				return playOnPlayer(list, argString(a, "name"), argString(a, "kind"), player, shuffle, hass.Get().Service)
 			}},
 
 		{llm.Tool{Name: "home_stop_music", Description: "Stop music. With no player named it stops every speaker and computer " +
