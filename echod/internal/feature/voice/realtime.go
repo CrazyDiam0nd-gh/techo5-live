@@ -52,6 +52,14 @@ type continuous interface{ Continuous() bool }
 // realtimeMemory is how long a session, and what was said in it, is kept for a follow-up.
 const realtimeMemory = 5 * time.Minute
 
+// quiet is what the model is told to answer with when there was nothing to answer. It is not spoken.
+const quiet = "NOTHING"
+
+// isQuiet is whether a sentence is just that.
+func isQuiet(s string) bool {
+	return strings.EqualFold(strings.Trim(strings.TrimSpace(s), ".!?\"' "), quiet)
+}
+
 // maxPending bounds the microphone audio held while a session is still opening: 5 s at 16 kHz.
 const maxPending = 5 * 16000 * 2
 
@@ -131,7 +139,11 @@ func (b *realtimeBackend) Start(string) error {
 
 func instructionsFor(k Kit) string {
 	return k.Instructions(time.Now()) + "\n\nYou are talking with someone out loud, in real time, and they may interrupt you. " +
-		"Reply in text only, in short spoken sentences."
+		"Reply in text only, in short spoken sentences. " +
+		"Do not say anything before using a tool: speak once, after you have its result. " +
+		"Counting aloud, spelling, reciting and saying things are answers to speak, not timers or alarms. " +
+		"If what you heard is only noise, a fragment, or not meant for you, reply with exactly the word " + quiet +
+		" and nothing else: that overrides any instruction to ask people to repeat or restate."
 }
 
 // open dials the session.
@@ -339,7 +351,7 @@ func (b *realtimeBackend) say(gen uint64, text string) {
 	if kit := b.kit; kit.Tidy != nil {
 		text = kit.Tidy(text)
 	}
-	if text == "" {
+	if text == "" || isQuiet(text) {
 		return
 	}
 	select {
@@ -378,6 +390,11 @@ func (b *realtimeBackend) responseDone(cl *realtime.Client, e realtime.Event) {
 		b.say(gen, p)
 	}
 	if len(calls) > 0 && kit.Run != nil {
+		b.mu.Lock()
+		if b.text.Len() > 0 {
+			b.text.WriteString(" ")
+		}
+		b.mu.Unlock()
 		safe.Go("realtime tools", func() {
 			for _, c := range calls {
 				result := kit.Run(c.name, c.args)
@@ -393,7 +410,7 @@ func (b *realtimeBackend) responseDone(cl *realtime.Client, e realtime.Event) {
 		})
 		return
 	}
-	if full != "" {
+	if full != "" && !isQuiet(full) {
 		b.post(event{kind: evReplyText, text: full, gen: gen})
 	}
 	b.jobs <- speakJob{gen: gen, end: true}

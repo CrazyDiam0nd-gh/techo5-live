@@ -368,3 +368,16 @@ func TestBargeInAtTheStartOfATurnIsIgnored(t *testing.T) {
 		t.Errorf("phase %v", c.phase)
 	}
 }
+
+func TestQuietIsNotSpoken(t *testing.T) {
+	for _, s := range []string{"NOTHING", "Nothing.", " nothing! ", "\"NOTHING\""} {
+		if !isQuiet(s) {
+			t.Errorf("%q should be quiet", s)
+		}
+	}
+	for _, s := range []string{"Nothing to report.", "Nothing is wrong.", ""} {
+		if isQuiet(s) {
+			t.Errorf("%q should be spoken", s)
+		}
+	}
+}
