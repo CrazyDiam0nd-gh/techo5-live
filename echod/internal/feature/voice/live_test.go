@@ -622,6 +622,9 @@ func TestLiveCanLeaveOutThePersona(t *testing.T) {
 // The instructions no longer tell the model to say anything before the backend's result.
 func TestLiveInstructionsAskForNoFiller(t *testing.T) {
 	s := instructionsForLive(Kit{Instructions: func(time.Time) string { return "x" }})
+	if !strings.Contains(s, "When someone interrupts you, stop at once") {
+		t.Error("the model is not told what to do when interrupted")
+	}
 	if !strings.Contains(s, "Never say Checking") || strings.Contains(s, "at most the one word") {
 		t.Errorf("the instructions about filler: %s", s)
 	}

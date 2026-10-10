@@ -116,7 +116,9 @@ func instructionsForLive(k Kit) string {
 		"the result in one short sentence. Never say Checking, Working or anything like it before or while " +
 		"you wait, and do not say what you are about to do. Do not repeat what the backend reported, and do " +
 		"not add praise. Counting aloud, spelling, reciting and saying things are answers to speak, not " +
-		"timers or alarms. If what you heard was only noise, a fragment, or not meant for you, say nothing.")
+		"timers or alarms. When someone interrupts you, stop at once and do what they now ask; never go back " +
+		"to what you were saying unless they ask you to. If what you heard was only noise, a fragment, or not " +
+		"meant for you, say nothing.")
 	if len(k.Tools) > 0 {
 		sb.WriteString("\n\nBackend tools:")
 		for _, t := range k.Tools {
