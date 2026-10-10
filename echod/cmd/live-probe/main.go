@@ -34,6 +34,7 @@ func main() {
 	piper := flag.String("piper", "", "Wyoming TTS host:port, for the question")
 	askVoice := flag.String("ask-voice", "", "Wyoming voice for the question (empty: the server's default)")
 	say := flag.String("say", "What is two plus two? Then tell me a short fact about the moon.", "the question")
+	after := flag.Duration("interrupt-after", 1500*time.Millisecond, "for -scenario interrupt: how long after the model starts speaking")
 	again := flag.String("interrupt-with", "Stop. Tell me about Mars instead.", "the second question, for -scenario interrupt")
 	scenario := flag.String("scenario", "basic", "basic, tool or interrupt")
 	out := flag.String("out", "live-reply.wav", "where the model's voice is saved")
@@ -50,6 +51,12 @@ func main() {
 		check(err)
 		return realtime.To24k(realtime.Resample(q, f.Rate, 16000))
 	}
+	switch *scenario {
+	case "tool":
+		*say = "What time is it?"
+	case "interrupt":
+		*say = "Tell me a long story about a ship that sails to the moon. Take your time."
+	}
 	question := ask(*say)
 	fmt.Printf("question: %q, %.1f s\n", *say, float64(len(question))/2/live.SampleRate)
 
@@ -58,8 +65,6 @@ func main() {
 	if *scenario == "tool" {
 		cfg.Tools = []live.Tool{{Name: "get_time", Description: "The current time of day.",
 			Parameters: map[string]any{"type": "object", "properties": map[string]any{}}}}
-		*say = "What time is it?"
-		question = ask(*say)
 	}
 	t0 := time.Now()
 	c, err := live.Dial(ctx, cfg)
@@ -76,6 +81,10 @@ func main() {
 	first := map[string]string{}
 	var spoke time.Time
 	var firstAudio time.Time
+	var audioN int
+	var lastLog time.Time
+	var speechStarted = make(chan struct{})
+	var speechOnce sync.Once
 
 	go func() {
 		for e := range c.Events {
@@ -90,6 +99,21 @@ func main() {
 					firstAudio = time.Now()
 				}
 				voicePCM = append(voicePCM, b...)
+				audioN++
+				// How the voice arrives: wall time against the length of audio received so far. A voice
+				// paced in real time keeps these level; one that comes in bursts runs ahead.
+				if time.Since(lastLog) > 2*time.Second {
+					lastLog = time.Now()
+					fmt.Printf("[%5d ms] %d audio events, %.1f s of voice received\n", time.Since(t0).Milliseconds(),
+						audioN, float64(len(voicePCM))/2/live.SampleRate)
+				}
+			}
+			if e.Type == "session.output_transcript.delta" {
+				fmt.Printf("[%5d ms] model says: %q\n", time.Since(t0).Milliseconds(), e.Delta)
+				speechOnce.Do(func() { close(speechStarted) })
+			}
+			if e.Type == "session.input_transcript.delta" {
+				fmt.Printf("[%5d ms] heard: %q\n", time.Since(t0).Milliseconds(), e.Delta)
 			}
 			if e.Inner != nil {
 				k := e.Type + " > " + e.Inner.Type
@@ -128,7 +152,11 @@ func main() {
 	stream(question)
 	spoke = time.Now()
 	if *scenario == "interrupt" {
-		time.Sleep(2500 * time.Millisecond) // the model is part way through its answer
+		select { // the model is part way through its answer
+		case <-speechStarted:
+		case <-time.After(20 * time.Second):
+		}
+		time.Sleep(*after)
 		fmt.Printf("[%5d ms] interrupting\n", time.Since(t0).Milliseconds())
 		stream(ask(*again))
 	}

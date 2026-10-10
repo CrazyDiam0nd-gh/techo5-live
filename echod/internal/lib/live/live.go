@@ -251,15 +251,15 @@ func (c *Client) AppendInstructions(text string) error {
 	return c.Send(map[string]any{"type": "session.instructions.append", "instructions": text})
 }
 
-// ToolResult gives the backend what a function call returned, and asks it to go on. The guide shows
-// the two events but not whether they name the delegation; they do here, and the probe shows whether
-// the server accepts that.
+// ToolResult gives the backend what a function call returned, and asks it to go on. The server
+// refuses a delegation_id on either message (the probe saw unknown_parameter), so the call is
+// identified by its call_id alone.
 func (c *Client) ToolResult(call Call, output string) error {
-	if err := c.Send(map[string]any{"type": "response.item.create", "delegation_id": call.DelegationID,
+	if err := c.Send(map[string]any{"type": "response.item.create",
 		"item": map[string]any{"type": "function_call_output", "call_id": call.CallID, "output": output}}); err != nil {
 		return err
 	}
-	return c.Send(map[string]any{"type": "response.create", "delegation_id": call.DelegationID})
+	return c.Send(map[string]any{"type": "response.create"})
 }
 
 // Close ends the session. The server's closing event, with the final usage, is read from Events.

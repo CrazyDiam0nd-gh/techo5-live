@@ -158,10 +158,13 @@ func TestAFunctionCallIsCarriedOutAndAnswered(t *testing.T) {
 	a, b := f.next(), f.next()
 	item, _ := a["item"].(map[string]any)
 	if a["type"] != "response.item.create" || item["type"] != "function_call_output" || item["call_id"] != "c1" ||
-		item["output"] != "3 PM" || a["delegation_id"] != "d1" {
+		item["output"] != "3 PM" {
 		t.Errorf("result sent as %v", a)
 	}
-	if b["type"] != "response.create" {
+	if _, has := a["delegation_id"]; has {
+		t.Error("the server refuses a delegation_id on the result")
+	}
+	if _, has := b["delegation_id"]; has || b["type"] != "response.create" {
 		t.Errorf("then %v", b)
 	}
 }
