@@ -29,7 +29,34 @@ import (
 )
 
 func init() {
+	// Before anything asks for local time, and before there is more than one goroutine: see useSaved.
+	if loc := useSaved("/etc/localtime", os.Getenv("TZ")); loc != nil {
+		time.Local = loc
+	}
 	component.Register(component.Device, Get(), component.Order(11))
+}
+
+// useSaved is the zone saved on userdata, for a system that does not link /etc/localtime to it. Some
+// root file systems carry no link at all, and the standard library then reads local time as UTC even
+// though Home Assistant's zone has been saved: the clock on the screen, the alarms and the log would
+// all be an hour out in summer. It is nil when the system has a zone of its own (the link exists, or
+// TZ is set), or none is saved.
+func useSaved(etcLocaltime, tz string) *time.Location {
+	if tz != "" {
+		return nil
+	}
+	if _, err := os.Lstat(etcLocaltime); err == nil {
+		return nil
+	}
+	b, err := os.ReadFile(linkFile)
+	if err != nil {
+		return nil
+	}
+	loc, err := time.LoadLocationFromTZData("Local", b)
+	if err != nil {
+		return nil
+	}
+	return loc
 }
 
 // Where the zone lives. /etc/localtime and /etc/timezone in the image link to these.

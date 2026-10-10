@@ -138,3 +138,48 @@ func restartAsked() string {
 		return ""
 	}
 }
+
+// Where the system has no /etc/localtime, the zone saved on userdata is used; where it has one, or TZ
+// is set, it is left alone.
+func TestUseSaved(t *testing.T) {
+	dir := t.TempDir()
+	was := linkFile
+	linkFile = filepath.Join(dir, "localtime")
+	t.Cleanup(func() { linkFile = was })
+	missing := filepath.Join(dir, "no-such-link")
+
+	if useSaved(missing, "") != nil {
+		t.Error("a zone from nowhere")
+	}
+	if err := os.WriteFile(linkFile, tzif("GMT0BST,M3.5.0/1,M10.5.0"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	loc := useSaved(missing, "")
+	if loc == nil {
+		t.Fatal("the saved zone was not used")
+	}
+	summer := time.Date(2026, 10, 10, 11, 0, 0, 0, time.UTC).In(loc)
+	winter := time.Date(2026, 12, 10, 11, 0, 0, 0, time.UTC).In(loc)
+	if _, off := summer.Zone(); off != 3600 {
+		t.Errorf("October is %d s from UTC, want 3600 (BST)", off)
+	}
+	if _, off := winter.Zone(); off != 0 {
+		t.Errorf("December is %d s from UTC, want 0", off)
+	}
+	if useSaved(missing, "Europe/Paris") != nil {
+		t.Error("TZ is set, so the system's own zone stands")
+	}
+	present := filepath.Join(dir, "localtime-link")
+	if err := os.Symlink(linkFile, present); err != nil {
+		t.Fatal(err)
+	}
+	if useSaved(present, "") != nil {
+		t.Error("the system has a link of its own")
+	}
+	if err := os.WriteFile(linkFile, []byte("not a zone file"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if useSaved(missing, "") != nil {
+		t.Error("a broken saved zone was used")
+	}
+}
