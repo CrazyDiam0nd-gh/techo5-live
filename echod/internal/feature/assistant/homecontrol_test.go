@@ -154,3 +154,30 @@ func TestScriptLine(t *testing.T) {
 		t.Errorf("got  %q\nwant %q", got, want)
 	}
 }
+
+func TestPlayOnAnotherPlayer(t *testing.T) {
+	list := append(house(), hass.Exposed{ID: "media_player.pop_os_6", Domain: "media_player", Name: "Pop!_OS", State: "idle"})
+	var calls []call
+	rec := func(d, s string, data map[string]any) error { calls = append(calls, call{d, s, data}); return nil }
+
+	out, err := playOnPlayer(list, "Pink Floyd", "artist", "desk pc", false, rec)
+	if err != nil || !strings.Contains(out, "Pop!_OS") {
+		t.Fatalf("out=%q err=%v", out, err)
+	}
+	if len(calls) != 2 || calls[1].domain != "music_assistant" || calls[1].service != "play_media" ||
+		calls[1].data["entity_id"] != "media_player.pop_os_6" || calls[1].data["media_id"] != "Pink Floyd" {
+		t.Errorf("%+v", calls)
+	}
+	// A kind it does not know is an artist.
+	calls = nil
+	if _, err := playOnPlayer(list, "Money", "song", "desk pc", true, rec); err != nil || calls[1].data["media_type"] != "artist" || calls[0].data["shuffle"] != true {
+		t.Errorf("%v %+v", err, calls)
+	}
+	// Only media players: a light is not one.
+	if _, err := playOnPlayer(list, "x", "artist", "kitchen island", false, rec); err == nil {
+		t.Error("played music on a light")
+	}
+	if _, err := playOnPlayer(list, "", "artist", "desk pc", false, rec); err == nil {
+		t.Error("played nothing")
+	}
+}

@@ -271,7 +271,8 @@ func buildGuidance() string {
 		"was done that a tool did not report. When several devices match, ask which, unless the person said all of them. " +
 		"Music in this house is played, stopped and turned up or down through its scripts, which know about its speakers: " +
 		"use them for any music request, and never the device's own play_music, play_radio, stop or set_volume tools for " +
-		"that. The device's stop tool is only for a ringing alarm or timer."
+		"that. The device's stop tool is only for a ringing alarm or timer. The music scripts know only the Dot and the home " +
+		"theater: to play on any other player, such as a computer, use home_play_music."
 	if c := scriptCatalog(); c != "" {
 		s += "\n\n" + c
 	}

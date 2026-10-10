@@ -65,6 +65,26 @@ func homeTools() []tool {
 				return runScript(list, argString(a, "script"), fields, hass.Get().RunScript)
 			}},
 
+		{llm.Tool{Name: "home_play_music", Description: "Play music on any speaker or computer in the house through Music Assistant, " +
+			"by name: an artist, album, track or playlist. Use this when the person names a player the music scripts do not know (the " +
+			"scripts know the Dot and the home theater); for those, use the scripts. player is words from the media player's name.",
+			Parameters: object(map[string]any{
+				"name":    str("The artist, album, track or playlist to play."),
+				"kind":    str("artist, album, track or playlist. Artist for 'play X' or 'songs by X'."),
+				"player":  str("Words from the name of the media player to play it on, like 'desk pc'."),
+				"shuffle": map[string]any{"type": "boolean", "description": "Only if the person says shuffle."},
+			}, "name", "player")},
+			func(a map[string]any) (string, error) {
+				ctx, cancel := context.WithTimeout(context.Background(), scriptTimeout)
+				defer cancel()
+				list, err := hass.Get().ExposedEntities(ctx)
+				if err != nil {
+					return "", err
+				}
+				shuffle, _ := a["shuffle"].(bool)
+				return playOnPlayer(list, argString(a, "name"), argString(a, "kind"), argString(a, "player"), shuffle, hass.Get().Service)
+			}},
+
 		{llm.Tool{Name: "home_control", Description: "Operate a device in the house. device is words from its name or room " +
 			"(like 'kitchen island', 'bedroom blind'); action is one of: turn_on, turn_off, toggle, set_brightness (value 0 to 100), " +
 			"set_color (color), open, close, stop, set_position (value 0 to 100), set_temperature (value), set_volume (value 0 to 100), " +
@@ -491,4 +511,45 @@ func scriptLine(name string, info hass.ScriptInfo) string {
 		line += " Fields: " + strings.Join(fields, "; ") + "."
 	}
 	return line
+}
+
+// playOnPlayer starts music on an exposed media player through Music Assistant, which looks the name up in
+// its library. It is for the players the house's music scripts do not know.
+func playOnPlayer(list []hass.Exposed, name, kind, player string, shuffle bool,
+	call func(domain, service string, data map[string]any) error) (string, error) {
+	if strings.TrimSpace(name) == "" {
+		return "", errors.New("say what to play")
+	}
+	var players []hass.Exposed
+	for _, e := range list {
+		if e.Domain == "media_player" {
+			players = append(players, e)
+		}
+	}
+	found := match(players, player)
+	switch {
+	case len(found) == 0:
+		return "", fmt.Errorf("no media player matches %q", player)
+	case len(found) > 1:
+		var names []string
+		for _, e := range found {
+			names = append(names, e.Name)
+		}
+		return "", fmt.Errorf("several players match: %s. Ask which", strings.Join(names, "; "))
+	}
+	switch kind = strings.ToLower(strings.TrimSpace(kind)); kind {
+	case "artist", "album", "track", "playlist":
+	default:
+		kind = "artist"
+	}
+	target := found[0]
+	if err := call("media_player", "shuffle_set", map[string]any{"entity_id": target.ID, "shuffle": shuffle}); err != nil {
+		return "", fmt.Errorf("%s: %w", target.Name, err)
+	}
+	if err := call("music_assistant", "play_media", map[string]any{
+		"entity_id": target.ID, "media_id": name, "media_type": kind, "enqueue": "replace"}); err != nil {
+		return "", fmt.Errorf("%s: %w", target.Name, err)
+	}
+	hass.ForgetExposed()
+	return fmt.Sprintf("started %s %q on %s", kind, name, target.Name), nil
 }
