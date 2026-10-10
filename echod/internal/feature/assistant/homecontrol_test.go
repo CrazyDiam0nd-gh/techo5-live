@@ -356,3 +356,22 @@ func TestTheModelIsToldMusicIsNotAScriptThatStartsAComputer(t *testing.T) {
 		t.Errorf("the guidance does not say so: %s", g)
 	}
 }
+
+// Pausing or resuming "whatever is playing" starts with finding what is playing, not with this device.
+func TestPausingWhateverIsPlayingStartsByLooking(t *testing.T) {
+	g := buildGuidance()
+	for _, want := range []string{"first look with home_status", "do not assume it is this device"} {
+		if !strings.Contains(g, want) {
+			t.Errorf("the guidance lacks %q", want)
+		}
+	}
+	for _, tl := range tools() {
+		if tl.Name == "home_control" {
+			if !strings.Contains(tl.Description, "look with home_status for the one that is playing or paused") {
+				t.Errorf("home_control does not say so: %s", tl.Description)
+			}
+			return
+		}
+	}
+	t.Skip("no home_control tool in this build")
+}

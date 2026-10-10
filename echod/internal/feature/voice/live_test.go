@@ -902,3 +902,18 @@ func TestLiveTwoToolsAtOnceAreAnsweredTogether(t *testing.T) {
 		t.Errorf("ran %v", ran)
 	}
 }
+
+// The model is told it may offer music once, but only where it has music to play.
+func TestLiveMayOfferMusicOnlyWhereItCanPlayIt(t *testing.T) {
+	with := Kit{Instructions: func(time.Time) string { return "x" },
+		Tools: []realtime.Tool{{Name: "home_play_music", Description: "Play."}}}
+	without := Kit{Instructions: func(time.Time) string { return "x" },
+		Tools: []realtime.Tool{{Name: "set_timer", Description: "A timer."}}}
+	if s := instructionsForLive(with); !strings.Contains(s, "you may offer once, briefly, to play something") ||
+		!strings.Contains(s, "Do not offer again if they decline") {
+		t.Errorf("the offer is missing where music can be played: %s", s)
+	}
+	if s := instructionsForLive(without); strings.Contains(s, "offer once") {
+		t.Error("it is told to offer music with no way to play it")
+	}
+}

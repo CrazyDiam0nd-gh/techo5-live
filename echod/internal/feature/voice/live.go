@@ -126,6 +126,11 @@ func instructionsForLive(k Kit) string {
 		"timers or alarms. When someone interrupts you, stop at once and do what they now ask; never go back " +
 		"to what you were saying unless they ask you to. If what you heard was only noise, a fragment, or not " +
 		"meant for you, say nothing.")
+	if hasTool(k, "home_play_music") {
+		sb.WriteString("\n\nIf the conversation turns to a musician, a band, a song or a mood, you may offer once, briefly, to play " +
+			"something. If they say yes, play it with the music tools and say what is playing. Do not offer again if they decline, " +
+			"and do not offer when they are asking you for something else.")
+	}
 	if len(k.Tools) > 0 {
 		sb.WriteString("\n\nBackend tools:")
 		for _, t := range k.Tools {
@@ -625,4 +630,14 @@ func (b *liveBackend) shutdown() {
 		cl.Close()
 	}
 	b.wg.Wait()
+}
+
+// hasTool is whether the kit offers a tool by that name.
+func hasTool(k Kit, name string) bool {
+	for _, t := range k.Tools {
+		if t.Name == name {
+			return true
+		}
+	}
+	return false
 }

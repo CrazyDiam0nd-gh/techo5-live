@@ -161,6 +161,8 @@ func homeTools() []tool {
 			"set_color (color), open, close, stop, set_position (value 0 to 100), set_temperature (value), set_volume (value 0 to 100), " +
 			"play, pause, next, previous, volume_up, volume_down, start, return_home, press, set_speed (value 0 to 100). " +
 			"For the volume of any player, including this device, name the player and use set_volume, volume_up or volume_down. " +
+			"For play, pause, next and previous when the person has not said which player, look with home_status for the one that " +
+			"is playing or paused and use that one: do not assume it is this device. " +
 			"A scene or script is run with turn_on. " +
 			"If several devices match, the answer lists them: ask which one, or set all to true when they said all of them.",
 			Parameters: object(map[string]any{
