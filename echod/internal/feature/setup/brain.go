@@ -98,6 +98,10 @@ func brainSection(w http.ResponseWriter, token string) {
 	// Live voice.
 	fmt.Fprintf(w, `%s<label for="livevoice">The model's voice</label>
 	 <select id="livevoice" name="live_voice">%s</select>
+	 <label for="livekeep">Stay ready after an answer</label>
+	 <select id="livekeep" name="live_keep">%s</select>
+	 <p class="note">A new conversation takes two to three seconds to start. Staying ready keeps one open between questions so the
+	  next starts at once, but an open conversation is billed (about five cents a minute) whether or not anyone is talking.</p>
 	 <label for="liveboost">Voice loudness</label>
 	 <select id="liveboost" name="live_boost">%s</select>
 	 <p class="note">The model's voice is quiet next to the other voices. Louder is limited so it does not distort, but a louder
@@ -110,7 +114,7 @@ func brainSection(w http.ResponseWriter, token string) {
 	  <label for="livebackend">The model that does the thinking and the tools (leave empty for %s)</label>
 	  <input id="livebackend" name="live_backend" value="%s" autocomplete="off">
 	 </details></div>`,
-		part("div", "live", ""), liveVoiceOptions(b.LiveVoice), boostOptions(b.LiveBoost), checkedIf(b.LiveNoPrompt),
+		part("div", "live", ""), liveVoiceOptions(b.LiveVoice), keepOptions(b.LiveKeep), boostOptions(b.LiveBoost), checkedIf(b.LiveNoPrompt),
 		live.DefaultModel, html.EscapeString(b.LiveModel), live.DefaultBackend, html.EscapeString(b.LiveBackend))
 
 	// Servers and voices of the other ways.
@@ -195,6 +199,34 @@ func houseNote() string {
 	return "The house is not connected, so it cannot look at or operate devices; Home Assistant gives the device its address and token when it is paired."
 }
 
+// keepChoices are how long a live session may stay open after an answer, in seconds; 0 is the default 20.
+var keepChoices = []struct {
+	secs  int
+	label string
+}{{0, "20 seconds"}, {60, "1 minute"}, {180, "3 minutes"}, {300, "5 minutes"}}
+
+func keepOptions(cur int) string {
+	var sb strings.Builder
+	for _, k := range keepChoices {
+		fmt.Fprintf(&sb, `<option value="%d"%s>%s</option>`, k.secs, selected(k.secs == cur), k.label)
+	}
+	return sb.String()
+}
+
+// keepFrom reads the choice, and takes anything else for the default.
+func keepFrom(v string) int {
+	n, err := strconv.Atoi(strings.TrimSpace(v))
+	if err != nil {
+		return 0
+	}
+	for _, k := range keepChoices {
+		if k.secs == n {
+			return n
+		}
+	}
+	return 0
+}
+
 // boostChoices are the loudness settings of the live voice, in decibels.
 var boostChoices = []int{0, 3, 6, 9}
 
@@ -264,6 +296,7 @@ func saveBrain(r *http.Request) string {
 		LiveBackend:  v("live_backend"),
 		LiveNoPrompt: r.PostFormValue("live_no_prompt") == "yes",
 		LiveBoost:    boostFrom(r.PostFormValue("live_boost")),
+		LiveKeep:     keepFrom(r.PostFormValue("live_keep")),
 	}
 	if b.Mode != config.BrainHomeAssistant && b.Mode != config.BrainDirect && b.Mode != config.BrainRealtime && b.Mode != config.BrainLive {
 		return "that is not a way of answering this device knows"

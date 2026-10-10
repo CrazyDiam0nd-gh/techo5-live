@@ -29,8 +29,8 @@ import (
 // A session bills for the time it is open, so it is kept only for the follow-up that may come.
 
 const (
-	// liveMemory is how long a session is kept after a conversation, for a follow-up. liveMaxSession is
-	// the longest one is used before it is renewed at the start of a turn.
+	// liveMemory is how long a session is kept after a conversation, for a follow-up, unless the owner chose
+	// otherwise (keepFor). liveMaxSession is the longest one is used before it is renewed at the start of a turn.
 	liveMemory     = 20 * time.Second
 	liveMaxSession = 8 * time.Minute
 
@@ -291,7 +291,7 @@ func (b *liveBackend) Stop() error {
 		b.cl, b.ready = nil, false
 		return nil
 	}
-	b.closer = time.AfterFunc(liveMemory, b.expire)
+	b.closer = time.AfterFunc(keepFor(), b.expire)
 	return nil
 }
 
@@ -550,4 +550,13 @@ var stageDirection = regexp.MustCompile(`\s*\[[a-zA-Z ,'-]{1,24}\]\s*`)
 // cleanSaid is the model's transcript of its reply as text for the screen and the log.
 func cleanSaid(s string) string {
 	return strings.TrimSpace(stageDirection.ReplaceAllString(s, " "))
+}
+
+// keepFor is how long a session stays open after a conversation. A longer wait costs the time it is open and
+// saves the two or three seconds a new session takes to start.
+func keepFor() time.Duration {
+	if n := config.Get().Brain.LiveKeep; n > 0 {
+		return time.Duration(n) * time.Second
+	}
+	return liveMemory
 }

@@ -35,6 +35,9 @@ type Brain struct {
 	// LiveBoost is how many decibels louder the live voice is played: 0, 3, 6 or 9. The model's voice is
 	// recorded quietly (about 8 dB under the Piper voice); a limiter keeps a louder one from distorting.
 	LiveBoost int `json:"live_boost,omitempty"`
+	// LiveKeep is how many seconds a live session is kept open after a conversation, for the next one to start
+	// at once: 20 (when 0), 60, 180 or 300. An open session is billed.
+	LiveKeep int `json:"live_keep,omitempty"`
 	// LiveNoPrompt leaves Prompt out of the live model's instructions, to hear it without the persona.
 	LiveNoPrompt bool `json:"live_no_prompt,omitempty"`
 

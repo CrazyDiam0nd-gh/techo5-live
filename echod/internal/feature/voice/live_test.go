@@ -736,3 +736,14 @@ func TestLiveTheVoiceIsPlayedLouderWhenAsked(t *testing.T) {
 		t.Errorf("+6 dB: %.0f against %.0f, want about twice", loud, normal)
 	}
 }
+
+func TestLiveKeepForFollowsTheChoice(t *testing.T) {
+	config.Use(filepath.Join(t.TempDir(), "state.json"))
+	if keepFor() != 20*time.Second {
+		t.Errorf("default %v", keepFor())
+	}
+	_ = config.Set().Brain().Set(config.Brain{Mode: config.BrainLive, LiveKeep: 180})
+	if keepFor() != 3*time.Minute {
+		t.Errorf("chosen %v", keepFor())
+	}
+}

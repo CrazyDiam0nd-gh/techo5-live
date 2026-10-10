@@ -373,3 +373,26 @@ func TestTheLiveVoiceLoudnessIsAChoice(t *testing.T) {
 		}
 	}
 }
+
+func TestHowLongALiveSessionStaysReadyIsAChoice(t *testing.T) {
+	freshConfig(t)
+	for in, want := range map[string]int{"": 0, "0": 0, "60": 60, "180": 180, "300": 300, "45": 0, "9999": 0, "x": 0} {
+		if got := keepFrom(in); got != want {
+			t.Errorf("keepFrom(%q) = %d, want %d", in, got, want)
+		}
+	}
+	if p := saveBrain(formPost(url.Values{"mode": {"live"}, "key": {"k"}, "live_keep": {"180"}})); p != "" {
+		t.Fatal(p)
+	}
+	if config.Get().Brain.LiveKeep != 180 {
+		t.Errorf("kept %d", config.Get().Brain.LiveKeep)
+	}
+	w := httptest.NewRecorder()
+	brainSection(w, "tok")
+	for _, want := range []string{`<select id="livekeep" name="live_keep">`, `<option value="180" selected>3 minutes</option>`,
+		`<option value="0">20 seconds</option>`, "Stay ready after an answer"} {
+		if !strings.Contains(w.Body.String(), want) {
+			t.Errorf("the form lacks %q", want)
+		}
+	}
+}
