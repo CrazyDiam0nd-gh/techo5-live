@@ -374,6 +374,7 @@ func (c *conversation) handle(e event) {
 			return
 		}
 		slog.Info("talked over, listening", "was", c.phase, "slot", c.slot+1)
+		mic.Get().HoldGain(false)
 		c.sound.Silence()
 		c.reply = reply{}
 		c.clearPending()
@@ -749,6 +750,10 @@ func (c *conversation) speak(url string) {
 
 	c.showPhase(wakeword.ReplyingEffect(c.slot))
 	c.player.Sounding(true)
+	if c.keepsListening() {
+		// Its own voice is about to be in the microphone: hold the level where speech left it.
+		mic.Get().HoldGain(true)
+	}
 
 	// The deadline is left as it was. Text arriving is not the pipeline delivering: it still owes the
 	// audio, and the limit it was given when the device stopped listening goes on running until some
@@ -809,6 +814,7 @@ func (c *conversation) idle(why string, how activity.Outcome) {
 	c.turn.Ends(how)
 	c.turn = nil
 
+	mic.Get().HoldGain(false)
 	c.enter(phaseIdle)
 	c.claim.Clear()
 	c.player.Sounding(false)

@@ -277,3 +277,8 @@ func (s *Source) SetAdapting(on bool) {
 		s.cancel.filter.SetAdapting(on)
 	}
 }
+
+// HoldGain keeps the leveling gain where it is while on: the microphone is listening through a reply
+// the device is speaking, and the echo left after canceling is above the room's floor, so the leveler
+// would take it for speech and bring it up to the loudness of someone talking.
+func (s *Source) HoldGain(on bool) { s.leveler.held.Store(on) }

@@ -83,6 +83,10 @@ func (g *echoGate) Feed(frame []int16) [][]int16 {
 	}
 
 	loud := r > g.threshold()
+	if g.frames%25 == 0 {
+		slog.Info("echo gate trace", "t_s", float64(g.frames)/50, "rms_dbfs", dbfs(r), "echo_dbfs", dbfs(g.floor),
+			"threshold_dbfs", dbfs(g.threshold()), "open", g.open)
+	}
 	if !loud {
 		g.floor = math.Max(g.floor*gateDecay, r)
 	} else {

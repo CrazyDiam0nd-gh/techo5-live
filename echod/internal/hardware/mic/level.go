@@ -87,6 +87,11 @@ const (
 type leveler struct {
 	gain float32
 
+	// held says the gain is to be kept as it is: applied, but not followed or learned from. It is set
+	// while the device speaks to a microphone that is listening, when the echo left after canceling is
+	// well above the room and would otherwise be taken for speech and brought up to its loudness.
+	held atomic.Bool
+
 	// least is how low the floors may go, which follows the analog gain and so is set from outside the
 	// reader that uses it. quiet is the same for the gate over the floor, in dB.
 	least atomic.Uint32
@@ -294,6 +299,10 @@ func (l *leveler) apply(frame []int16) {
 	if len(frame) == 0 {
 		return
 	}
+	if l.held.Load() {
+		l.applyHeld(frame)
+		return
+	}
 	rms, peak := l.observe(frame)
 
 	// Silence says nothing about how loud speech is, so the gain is left where speech left it.
@@ -383,4 +392,27 @@ func (s *Source) Clipped() uint64 { return s.leveler.clipped.Load() }
 // It is deliberately smoothed for looking at rather than for measuring: quick to rise, slow to fall.
 func (s *Source) Level() float64 {
 	return float64(math.Float32frombits(s.leveler.level.Load()))
+}
+
+// applyHeld applies the gain as it stands, trimmed only to keep a loud frame from clipping, and learns
+// nothing: not the room's floor, not a new gain.
+func (l *leveler) applyHeld(frame []int16) {
+	var peak int32
+	for _, s := range frame {
+		peak = max(peak, int32(s), -int32(s))
+	}
+	gain := l.gain
+	if peak > 0 {
+		gain = min(gain, l.headroom/float32(peak))
+	}
+	for i, s := range frame {
+		switch v := float32(s) * gain; {
+		case v > fullScale-1:
+			frame[i] = fullScale - 1
+		case v < -fullScale:
+			frame[i] = -fullScale
+		default:
+			frame[i] = int16(v)
+		}
+	}
 }

@@ -410,3 +410,32 @@ func TestFloorIsPublishedForOtherGoroutines(t *testing.T) {
 		t.Errorf("after forgetting the floor is %.1f dB, want full scale", back)
 	}
 }
+
+// Held, the gain neither follows quiet audio up nor moves at all: echo left over from a reply is not
+// brought up to the loudness of speech.
+func TestLevelerHeldDoesNotAdapt(t *testing.T) {
+	l := newLeveler()
+	talk(l, -65, -45, 20)
+	before := l.gain
+
+	l.held.Store(true)
+	var got []int16
+	for range 400 {
+		got = speech(-60) // echo well above the room, well below speech
+		l.apply(got)
+	}
+	if l.gain != before {
+		t.Errorf("gain moved from %.2f to %.2f while held", before, l.gain)
+	}
+	if lvl := levelOf(got); lvl > -60+maxGainDB+1 || lvl > -35 {
+		t.Errorf("echo came out at %.1f dBFS", lvl)
+	}
+
+	l.held.Store(false)
+	for range 100 {
+		l.apply(speech(-25)) // loud speech, which the gain has to come down for
+	}
+	if l.gain == before {
+		t.Error("the gain never moved again once released")
+	}
+}
