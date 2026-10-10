@@ -877,7 +877,9 @@ func (c *conversation) hold(on bool) {
 	// Ducked music keeps playing under the whole turn, so the echo canceller has a live reference while
 	// somebody is talking — which is the one thing an adaptive filter must not learn from. Stop it
 	// learning for the duration; it goes on canceling with what it already knows.
-	mic.Get().SetAdapting(!on)
+	// A realtime reply is heard through the microphone, so the canceller has to go on learning the
+	// speaker's path through it: frozen, it removed nothing and the device heard itself.
+	mic.Get().SetAdapting(!on || c.keepsListening())
 
 	// Every background, not just the track: a room playing along with the rest of the house is also
 	// something a reply has to be heard over, and it is not the media player's to quieten.
@@ -1035,6 +1037,11 @@ func (c *conversation) stream(ctx context.Context, be backend, slot int, followU
 	frames, unlisten := c.source.Listen("turn")
 	defer unlisten()
 
+	// Whether the backend wants the microphone through its reply (realtime). Read from the backend this
+	// turn was given: c.be belongs to the loop.
+	cont, isCont := be.(continuous)
+	keeps := isCont && cont.Continuous()
+
 	buf := make([]byte, 0, mic.FrameSamples*2)
 
 	// Send what was already said before this turn began. The wake word can only be recognized after
@@ -1045,6 +1052,11 @@ func (c *conversation) stream(ctx context.Context, be backend, slot int, followU
 	// the wake word rather than the request, and the tone itself is louder at the array than they are.
 	pre := c.source.Recent(mic.History)
 	if wakeword.Tones(slot, followUp) {
+		pre = nil
+	}
+	// After a reply the history is the reply itself, ringing in the room: a follow-up has no wake word
+	// to catch, and sending that to a model that is listening makes it answer its own voice.
+	if keeps && followUp {
 		pre = nil
 	}
 
@@ -1101,6 +1113,12 @@ func (c *conversation) stream(ctx context.Context, be backend, slot int, followU
 		sounding = time.Now().Add(wakeword.ChimeLength(slot, followUp) + speaker.HardwareTail)
 	}
 	var held int
+	// The same ringing is still in the room as a follow-up opens, so its first moments are held back.
+	if keeps && followUp && sounding.IsZero() {
+		sounding = time.Now().Add(speaker.HardwareTail + 300*time.Millisecond)
+	}
+	var gate echoGate
+	defer gate.Reset()
 
 	var peak, samples int
 	var energy float64
@@ -1148,8 +1166,18 @@ func (c *conversation) stream(ctx context.Context, be backend, slot int, followU
 			}
 			recording.Get().Frame(buf)
 
-			c.sendAudio(be, buf)
 			see(frame)
+			if keeps && c.Phase() == phaseReplying {
+				// Its own voice is playing: send what is clearly someone else (echoGate).
+				for _, f := range gate.Feed(append([]int16(nil), frame...)) {
+					c.sendAudio(be, int16Bytes(f))
+				}
+				continue
+			}
+			if keeps {
+				gate.Reset()
+			}
+			c.sendAudio(be, buf)
 		}
 	}
 }
@@ -1215,4 +1243,13 @@ func pageAsked(heard string) bool {
 		return true
 	}
 	return !config.Get().Brain.Direct() && (triggers.AboutWeather(heard, lang) || triggers.AboutRadar(heard, lang))
+}
+
+// int16Bytes is samples as 16-bit little-endian bytes.
+func int16Bytes(s []int16) []byte {
+	b := make([]byte, 0, 2*len(s))
+	for _, v := range s {
+		b = append(b, byte(v), byte(v>>8))
+	}
+	return b
 }
