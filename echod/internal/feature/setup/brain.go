@@ -61,7 +61,11 @@ func brainSection(w http.ResponseWriter, token string) {
 		return fmt.Sprintf(`<%s data-modes="%s"%s%s>`, tag, modes, hide, extra)
 	}
 
-	fmt.Fprint(w, `<fieldset><legend>Voice assistant</legend><form method="post" action="/setup/save">`)
+	haveKey := "0"
+	if b.Key != "" {
+		haveKey = "1"
+	}
+	fmt.Fprintf(w, `<fieldset><legend>Voice assistant</legend><form id="brainform" method="post" action="/setup/save" data-havekey="%s">`, haveKey)
 	hidden(w, token, "brain", "sound")
 	fmt.Fprintf(w, `<label for="mode">Answered by</label>
 	 <select id="mode" name="mode">
@@ -83,7 +87,7 @@ func brainSection(w http.ResponseWriter, token string) {
 	  an OpenAI-style endpoint (llama.cpp, Ollama) will do.</p>`)
 	fmt.Fprintf(w, `%sLive conversation sends what is said to OpenAI, which listens, decides when you have finished and
 	  writes the answer as it goes; the text-to-speech server below speaks it, in the voice you choose, and talking
-	  over it stops it. %s</p>`, part("p", "realtime", ` class="note"`), houseNote())
+	  over it stops it. It needs a text-to-speech server (below) and your OpenAI key. %s</p>`, part("p", "realtime", ` class="note"`), houseNote())
 	fmt.Fprintf(w, `%sLive voice is OpenAI's full-duplex model: it listens while it talks, answers in one of its own
 	  voices and can be talked over mid-sentence. It needs only an OpenAI key. It is billed for the time a
 	  conversation is open, about five cents a minute, and the device closes it soon after the conversation ends.
@@ -139,12 +143,25 @@ func brainSection(w http.ResponseWriter, token string) {
 	 <textarea id="prompt" name="prompt" rows="3" maxlength="2000">%s</textarea></div>`,
 		part("div", "direct realtime live", ""), html.EscapeString(b.Prompt))
 
-	fmt.Fprint(w, `<p><button type="submit">Save</button></p></form>
-	 <script>(function(){var sel=document.getElementById('mode');
+	fmt.Fprint(w, `<p id="brainwhy" class="banner bad" role="alert" hidden></p>
+	 <p><button type="submit">Save</button></p></form>
+	 <script>(function(){var sel=document.getElementById('mode'),form=document.getElementById('brainform'),why=document.getElementById('brainwhy');
 	  function apply(){var m=sel.value||'ha';
 	   document.querySelectorAll('[data-modes]').forEach(function(e){
-	    e.hidden=(' '+e.getAttribute('data-modes')+' ').indexOf(' '+m+' ')<0;});}
-	  sel.addEventListener('change',apply);apply();})();</script></fieldset>`)
+	    e.hidden=(' '+e.getAttribute('data-modes')+' ').indexOf(' '+m+' ')<0;});
+	   why.hidden=true;}
+	  sel.addEventListener('change',apply);apply();
+	  // The device refuses a save it could not use, and a refusal sends the page back without what was typed.
+	  // So the same checks are made here first, beside the button, and nothing is lost.
+	  form.addEventListener('submit',function(ev){
+	   var m=sel.value,v=function(n){var e=document.getElementById(n);return e?e.value.trim():'';};
+	   var removing=form.querySelector('[name=nokey]');removing=removing&&removing.checked;
+	   var key=v('key')!==''||(form.getAttribute('data-havekey')==='1'&&!removing),msg='';
+	   if(m==='realtime'&&!v('tts')){msg='Live conversation needs a text-to-speech server: fill in Text to speech (host:port), like 192.168.1.20:10200.';}
+	   else if(m==='realtime'&&!key){msg='Live conversation needs your OpenAI key.';}
+	   else if(m==='live'&&!key){msg='Live voice needs your OpenAI key.';}
+	   else if(m==='direct'&&(!v('stt')||!v('tts')||!v('llm'))){msg='Answering directly needs all three: speech to text, text to speech and the chat model endpoint.';}
+	   if(msg){ev.preventDefault();why.textContent=msg;why.hidden=false;why.scrollIntoView({block:'center'});}});})();</script></fieldset>`)
 }
 
 // modeName is the name a way of answering goes by in the form's parts; Home Assistant's mode is empty.

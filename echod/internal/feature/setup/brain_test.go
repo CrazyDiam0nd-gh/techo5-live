@@ -326,3 +326,27 @@ func TestHiddenFieldsKeepTheirValues(t *testing.T) {
 		}
 	}
 }
+
+// The page checks a save before sending it, so that a refusal does not throw away what was typed: the form
+// says whether a key is already kept, and has a place for what is missing.
+func TestTheFormChecksBeforeItSends(t *testing.T) {
+	freshConfig(t)
+	w := httptest.NewRecorder()
+	brainSection(w, "tok")
+	page := w.Body.String()
+	for _, want := range []string{`id="brainform"`, `data-havekey="0"`, `id="brainwhy"`, "Live conversation needs a text-to-speech server",
+		"Live voice needs your OpenAI key", "Answering directly needs all three", "It needs a text-to-speech server (below)"} {
+		if !strings.Contains(page, want) {
+			t.Errorf("the form lacks %q", want)
+		}
+	}
+	_ = config.Set().Brain().SetKey("k")
+	w = httptest.NewRecorder()
+	brainSection(w, "tok")
+	if !strings.Contains(w.Body.String(), `data-havekey="1"`) {
+		t.Error("the form does not say a key is kept")
+	}
+	if strings.Contains(w.Body.String(), `value="k"`) {
+		t.Error("the key is in the page")
+	}
+}
