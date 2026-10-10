@@ -159,3 +159,75 @@ func TestASaveTheDeviceWouldRefuseIsStoppedOnThePage(t *testing.T) {
 		}
 	}
 }
+
+// A save used to come back at the top of the page, with its message out of sight. In a real browser: scroll down a
+// long tab, save, and the page is where it was, with the "Saved." in view.
+func TestASaveKeepsYourPlaceOnThePage(t *testing.T) {
+	chrome := os.Getenv("TECHO5_BROWSER")
+	if chrome == "" {
+		t.Skip("set TECHO5_BROWSER to a Chrome or Chromium to run this")
+	}
+	f, c := letInBrowser(t)
+	result := make(chan string, 1)
+	mux := http.NewServeMux()
+	mux.HandleFunc("/setup", f.serve)
+	mux.HandleFunc("/setup/", f.serve)
+	mux.HandleFunc("/result", func(w http.ResponseWriter, r *http.Request) {
+		select {
+		case result <- r.URL.Query().Get("r"):
+		default:
+		}
+	})
+	mux.HandleFunc("/driver", func(w http.ResponseWriter, r *http.Request) {
+		http.SetCookie(w, &http.Cookie{Name: c.Name, Value: c.Value, Path: "/"})
+		fmt.Fprint(w, `<!doctype html><iframe id="p" src="/setup?tab=sound" width="900" height="500"></iframe><script>
+		const p = document.getElementById('p'); let stage = 0, before = 0;
+		const wait = ms => new Promise(r => setTimeout(r, ms));
+		p.addEventListener('load', async () => {
+		  const w = p.contentWindow, d = p.contentDocument;
+		  if (stage === 0) {
+		    stage = 1;
+		    await wait(200);
+		    w.scrollTo(0, 900); await wait(200);
+		    before = w.scrollY;
+		    const form = [...d.forms].find(f => f.action.includes('/setup/save') && f.querySelector('[name=what][value=speaker]'));
+		    form.requestSubmit();
+		  } else if (stage === 1) {
+		    stage = 2;
+		    await wait(500);
+		    const b = d.querySelector('.banner'), r = b ? b.getBoundingClientRect() : null;
+		    fetch('/result?r=' + encodeURIComponent(JSON.stringify({before, after: w.scrollY, url: w.location.search,
+		      banner: b ? b.textContent.trim() : '', bannerInView: !!r && r.top >= 0 && r.bottom <= w.innerHeight})));
+		  }
+		});</script>`)
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	startChrome(t, ctx, chrome, srv.URL+"/driver")
+
+	var got string
+	select {
+	case got = <-result:
+	case <-ctx.Done():
+		t.Fatal("the page never reported")
+	}
+	var out struct {
+		Before, After float64
+		URL, Banner   string
+		BannerInView  bool
+	}
+	if err := json.Unmarshal([]byte(got), &out); err != nil {
+		t.Fatal(err, got)
+	}
+	if out.Before < 500 {
+		t.Fatalf("the tab is too short to scroll (%v): the test cannot tell", out.Before)
+	}
+	if out.After < out.Before-5 || out.After > out.Before+5 {
+		t.Errorf("scrolled to %v before the save and %v after it", out.Before, out.After)
+	}
+	if !strings.Contains(out.URL, "saved=1") || out.Banner != "Saved." || !out.BannerInView {
+		t.Errorf("after the save: %+v", out)
+	}
+}

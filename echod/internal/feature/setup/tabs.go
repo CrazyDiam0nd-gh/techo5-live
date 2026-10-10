@@ -85,7 +85,7 @@ func head(w http.ResponseWriter) {
  .deckrow{display:grid;grid-template-columns:repeat(auto-fit,minmax(8.5rem,1fr));gap:.4rem;margin-bottom:.4rem} .deckrow>p{grid-column:1/-1}
  button.quiet{background:var(--field);color:var(--text);border:1px solid var(--line);font-weight:500;padding:.35rem .9rem}
  .playing{color:var(--ok);display:flex;align-items:center;gap:.7rem;flex-wrap:wrap}
- .banner{border:1px solid color-mix(in srgb,var(--ok) 50%%,var(--bg));background:color-mix(in srgb,var(--ok) 10%%,var(--bg));border-radius:10px;padding:.5rem .8rem;margin:0 0 1rem}
+ .banner{position:sticky;top:.5rem;z-index:5;border:1px solid color-mix(in srgb,var(--ok) 50%%,var(--bg));background:color-mix(in srgb,var(--ok) 10%%,var(--bg));border-radius:10px;padding:.5rem .8rem;margin:0 0 1rem}
  .banner.bad{border-color:color-mix(in srgb,var(--bad) 50%%,var(--bg));background:color-mix(in srgb,var(--bad) 10%%,var(--bg))}
  .layout{display:grid;grid-template-columns:14rem minmax(0,1fr);gap:1.5rem;align-items:start}
  .layout>*{min-width:0}
@@ -120,7 +120,29 @@ func head(w http.ResponseWriter) {
  .kinds{display:flex;gap:.4rem;flex-wrap:wrap}
  .btns{display:flex;gap:.5rem;flex-wrap:wrap;margin-top:.8rem;align-items:center}
  .btns form{display:inline}
-</style>`, c[0], c[1], c[2], c[3], c[4], ok, bad, scheme)
+</style>
+<script>
+// A save posts and comes back as a fresh page, which starts at the top: the place on a long tab is lost, and
+// so is the message about the save, up where nobody is looking. So the position is kept across it, and
+// the message stays in view (it is sticky), and a plain "Saved." goes away by itself after a few seconds.
+(function(){
+ var key='setupScroll';
+ function tab(){var m=/[?&]tab=([^&#]*)/.exec(location.search);return m?m[1]:'';}
+ document.addEventListener('submit',function(e){
+  var f=e.target;
+  if(e.defaultPrevented||!f||!f.action||f.action.indexOf('/setup/save')<0)return;
+  try{sessionStorage.setItem(key,JSON.stringify({y:window.scrollY,tab:tab()}));}catch(x){}
+ },true);
+ window.addEventListener('DOMContentLoaded',function(){
+  try{
+   var v=JSON.parse(sessionStorage.getItem(key)||'null');sessionStorage.removeItem(key);
+   if(v&&v.tab===tab()&&/[?&](saved|renamed|problem)=/.test(location.search)){window.scrollTo(0,v.y);}
+  }catch(x){}
+  var ok=document.querySelector('.banner.ok');
+  if(ok){setTimeout(function(){ok.style.transition='opacity .6s';ok.style.opacity='0';setTimeout(function(){ok.hidden=true;},700);},5000);}
+ });
+})();
+</script>`, c[0], c[1], c[2], c[3], c[4], ok, bad, scheme)
 }
 
 // nav is the tabs, the one being shown marked.
