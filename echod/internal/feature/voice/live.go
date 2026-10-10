@@ -68,6 +68,8 @@ type liveBackend struct {
 	said        strings.Builder // what the model said, as text
 	heardPosted bool
 	heardEndMs  int       // where the person's last word ended on the session's clock
+	sentMs      int       // how much microphone audio the session has been sent: the same clock
+	replyInMs   int       // sentMs when the model began to answer; -1 before
 	speaking    bool      // voiced audio is flowing
 	silentMs    int       // the pause so far inside a reply
 	held        [][]int16 // the pause, kept back in case speech resumes (at 16 kHz)
@@ -88,7 +90,7 @@ type liveBackend struct {
 }
 
 func newLive(post func(event)) *liveBackend {
-	return &liveBackend{post: post, replyFrom: -1, res: live.NewResampler(live.SampleRate, speaker.VoiceRate),
+	return &liveBackend{post: post, replyFrom: -1, replyInMs: -1, res: live.NewResampler(live.SampleRate, speaker.VoiceRate),
 		mic: live.NewResampler(16000, live.SampleRate)}
 }
 
@@ -110,11 +112,11 @@ func instructionsForLive(k Kit) string {
 		"Delegate to the backend whenever the request is about the current time or date, timers, alarms, " +
 		"volume, the weather, music or the radio, or anything about the house and its devices, and whenever " +
 		"someone asks you to change any of them. Delegate before giving an answer that depends on backend " +
-		"work, and do not guess the result while you wait: say at most the one word Checking, then wait for " +
-		"the result and give it in one short sentence. Do not describe what you are about to do, do not " +
-		"repeat what the backend reported, and do not add praise. Counting aloud, spelling, reciting and " +
-		"saying things are answers to speak, not timers or alarms. If what you heard was only noise, a " +
-		"fragment, or not meant for you, say nothing.")
+		"work, and do not guess the result while you wait: say nothing while the backend works, then give " +
+		"the result in one short sentence. Never say Checking, Working or anything like it before or while " +
+		"you wait, and do not say what you are about to do. Do not repeat what the backend reported, and do " +
+		"not add praise. Counting aloud, spelling, reciting and saying things are answers to speak, not " +
+		"timers or alarms. If what you heard was only noise, a fragment, or not meant for you, say nothing.")
 	if len(k.Tools) > 0 {
 		sb.WriteString("\n\nBackend tools:")
 		for _, t := range k.Tools {
@@ -176,7 +178,7 @@ func (b *liveBackend) newTurn() {
 	b.heard.Reset()
 	b.said.Reset()
 	b.heardPosted, b.speaking, b.dropping = false, false, false
-	b.silentMs, b.held, b.replyFrom = 0, nil, -1
+	b.silentMs, b.held, b.replyFrom, b.replyInMs = 0, nil, -1, -1
 	b.workUntil, b.callInResp = time.Time{}, false
 	b.res.Reset()
 	b.spoke = time.Time{}
@@ -205,6 +207,7 @@ func (b *liveBackend) open() {
 		return
 	}
 	b.cl, b.ready, b.kit, b.openedAt, b.openWith = cl, true, kit, time.Now(), settings
+	b.sentMs, b.heardEndMs = 0, 0
 	held := b.pending
 	b.pending = nil
 	b.mu.Unlock()
@@ -214,6 +217,9 @@ func (b *liveBackend) open() {
 		b.micMu.Lock()
 		out := b.mic.Push(live.PCM16(held))
 		b.micMu.Unlock()
+		b.mu.Lock()
+		b.sentMs += len(out) * 1000 / live.SampleRate
+		b.mu.Unlock()
 		_ = cl.Audio(live.Bytes(out))
 	}
 	safe.Go("live events", func() { b.loop(cl) })
@@ -253,6 +259,9 @@ func (b *liveBackend) Audio(frame []byte) error {
 	b.micMu.Lock()
 	out := b.mic.Push(live.PCM16(frame))
 	b.micMu.Unlock()
+	b.mu.Lock()
+	b.sentMs += len(out) * 1000 / live.SampleRate
+	b.mu.Unlock()
 	return cl.Audio(live.Bytes(out))
 }
 
@@ -319,8 +328,11 @@ func (b *liveBackend) handle(cl *live.Client, e live.Event) {
 		b.mu.Lock()
 		if b.replyFrom < 0 {
 			b.replyFrom = e.StartMs
-			// On the session's clock: how long the model took, from the end of your last word to its first.
-			slog.Info("live: the model began to answer", "after_ms", e.StartMs-b.heardEndMs, "words", strings.TrimSpace(e.Delta))
+			// The microphone's clock is the person's, and the model's own voice has another that does not
+			// move with it, so what the person says is compared with what has been sent, not with this.
+			b.replyInMs = b.sentMs
+			slog.Info("live: the model began to answer", "words", strings.TrimSpace(e.Delta),
+				"mic_sent_ms", b.sentMs, "last_word_ended_ms", b.heardEndMs)
 		}
 		b.said.WriteString(e.Delta)
 		b.mu.Unlock()
@@ -373,7 +385,7 @@ func (b *liveBackend) onHeard(e live.Event) {
 	b.mu.Lock()
 	b.heard.WriteString(e.Delta)
 	b.heardEndMs = max(b.heardEndMs, e.EndMs)
-	talkedOver := b.speaking && b.replyFrom >= 0 && e.StartMs >= b.replyFrom+talkedOverAfter
+	talkedOver := b.speaking && b.replyInMs >= 0 && e.StartMs >= b.replyInMs+talkedOverAfter
 	var gen uint64
 	if talkedOver {
 		b.gen++
@@ -382,7 +394,7 @@ func (b *liveBackend) onHeard(e live.Event) {
 		b.said.Reset()
 		b.heard.Reset()
 		b.heard.WriteString(e.Delta)
-		b.heardPosted, b.replyFrom = false, -1
+		b.heardPosted, b.replyFrom, b.replyInMs = false, -1, -1
 		b.workUntil, b.callInResp = time.Time{}, false
 		b.res.Reset()
 	}
@@ -442,7 +454,7 @@ func (b *liveBackend) onVoice(samples []int16) {
 	var said string
 	if ended {
 		said = strings.TrimSpace(b.said.String())
-		b.speaking, b.held, b.silentMs, b.replyFrom = false, nil, 0, -1
+		b.speaking, b.held, b.silentMs, b.replyFrom, b.replyInMs = false, nil, 0, -1, -1
 		b.said.Reset()
 		b.heard.Reset()
 		b.heardPosted = false

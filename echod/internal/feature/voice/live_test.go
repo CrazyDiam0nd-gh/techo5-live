@@ -129,6 +129,17 @@ func liveSetup(t *testing.T, run func(name, args string) string) (*liveBackend, 
 	return b, events, f
 }
 
+// feed sends ms of microphone audio (silence at 16 kHz) to the backend, in the 20 ms frames it arrives in.
+func feed(t *testing.T, b *liveBackend, ms int) {
+	t.Helper()
+	frame := make([]byte, 640)
+	for range ms / 20 {
+		if err := b.Audio(frame); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
 // waitReady waits for the backend's session to be open.
 func waitReady(t *testing.T, b *liveBackend) {
 	t.Helper()
@@ -228,9 +239,11 @@ func TestLiveAnAnswerBecomesATurn(t *testing.T) {
 // which the transcript delivers late, are not. What the model has still to say of the reply that was
 // talked over is dropped until it falls quiet.
 func TestLiveTalkingOverAReply(t *testing.T) {
-	_, events, f := liveSetup(t, nil)
+	b, events, f := liveSetup(t, nil)
 	f.heard(" Tell me a story", 400)
-	f.said(" Once", 2000)
+	feed(t, b, 2000) // the microphone has been heard for two seconds when the model begins
+	// The model's own clock is nowhere near the microphone's, as on the device; only the latter counts.
+	f.said(" Once", 120000)
 	f.voice(true, 5)
 	f.heard(" please", 1500) // a late word of the question: not talking over
 	f.voice(true, 2)
@@ -252,7 +265,7 @@ func TestLiveTalkingOverAReply(t *testing.T) {
 	f.voice(true, 3) // the tail the model had already sent
 	f.voice(false, 2)
 	f.voice(true, 3) // its answer to the interruption
-	f.said(" Sure.", 4200)
+	f.said(" Sure.", 124200)
 	f.voice(false, 14)
 	got = waitFor(t, events, evStreamEnd)
 	if n := samples(got); n < 3*1600-200 || n > 3*1600+200 {
@@ -603,5 +616,13 @@ func TestLiveCanLeaveOutThePersona(t *testing.T) {
 	k.Base = nil // nothing to fall back to: the full instructions, not none
 	if s := instructionsForLive(k); !strings.Contains(s, "RULES") {
 		t.Error("no instructions at all without a Base")
+	}
+}
+
+// The instructions no longer tell the model to say anything before the backend's result.
+func TestLiveInstructionsAskForNoFiller(t *testing.T) {
+	s := instructionsForLive(Kit{Instructions: func(time.Time) string { return "x" }})
+	if !strings.Contains(s, "Never say Checking") || strings.Contains(s, "at most the one word") {
+		t.Errorf("the instructions about filler: %s", s)
 	}
 }
