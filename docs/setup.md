@@ -317,7 +317,7 @@ Set **Answered by** to *Live voice (OpenAI GPT-Live)* and fill in:
 | Field | What to put |
 |---|---|
 | Key | your OpenAI key (the same field as above). |
-| Live voice | the model's voice. Empty is `marin`; `cedar`, `alloy`, `ash`, `ballad`, `coral`, `echo`, `sage`, `shimmer`, `verse`, `juniper`, `breeze`, `vale` and `ember` are offered, and the server says if one is not available to your account. |
+| Live voice | the model's voice. Empty is `marin`. `cedar`, `alloy`, `ash`, `ballad`, `coral`, `echo`, `sage`, `shimmer` and `verse` are offered; they were accepted when tried. The ChatGPT app's other voices (such as `juniper` or `sol`) were refused for the account they were tried on ("Voice session access denied"), so they may not be available through the API. Any name can be typed, and the device says if the server will not use it. |
 | Model, and the model that does the thinking | leave empty for `gpt-live-1` and `gpt-5.6-luna`. |
 | Anything the assistant should know | its manner, or the name and habits of the house. |
 

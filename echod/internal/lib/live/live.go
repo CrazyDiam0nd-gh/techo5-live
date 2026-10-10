@@ -33,10 +33,11 @@ const (
 	DefaultVoice   = "marin"
 )
 
-// Voices are the names the page offers. OpenAI's guide names only marin; the rest are those reported for
-// the model and are not confirmed, so the page takes any name and the server says if it does not know it.
-var Voices = []string{"marin", "cedar", "alloy", "ash", "ballad", "coral", "echo", "sage", "shimmer", "verse",
-	"juniper", "breeze", "vale", "ember"}
+// Voices are the names the page offers: the ones a real session accepted (probed 2026-10-10 on one
+// account). OpenAI's guide names only marin. The ChatGPT app's other voices (arbor, breeze, cove,
+// ember, juniper, maple, sol, spruce, vale) were refused with "Voice session access denied", so they
+// are not offered; the page still takes any name, and the server says if it will not use it.
+var Voices = []string{"marin", "cedar", "alloy", "ash", "ballad", "coral", "echo", "sage", "shimmer", "verse"}
 
 // Tool is a function the backend model may call; the application runs it.
 type Tool struct {
