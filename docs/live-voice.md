@@ -29,7 +29,7 @@ show a camera by voice. Live voice is the more fun and the less polished of the 
 - An OpenAI API key. Optional, for the house tools: a Home Assistant long-lived token made for the device.
 
 ## Install
-Download the build for your device from this repository's Releases (`echod-dot-arm` or `echod-show-arm`, with its `.sha256`),
+Download the build for your device from this repository's [Releases](https://github.com/CrazyDiam0nd-gh/techo5-live/releases) (`echod-dot-arm` or `echod-show-arm`, with its `.sha256`),
 then:
 ```sh
 bash install.sh <the device's address> echod-show-arm echod-show-arm.sha256
