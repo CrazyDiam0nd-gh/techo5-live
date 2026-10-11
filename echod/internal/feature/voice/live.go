@@ -34,8 +34,10 @@ const (
 	liveMemory     = 20 * time.Second
 	liveMaxSession = 8 * time.Minute
 
-	// voicedRMS is the level above which a tenth of a second of the model's voice is speech.
-	voicedRMS = 250
+	// voicedRMS is the level above which a tenth of a second of the model's voice is speech. It is low on purpose: a
+	// quiet voice (coral peaks near a third of alloy) has soft words and endings under 250, and they were thrown away
+	// as pauses, which cut short replies to a half. The model's own silence is far below this.
+	voicedRMS = 40
 	// endSilence ends a reply; workSilence does the same while the backend is still thinking or running
 	// a tool; talkedOverAfter is how long after the model began to speak the person's words must begin
 	// to count as talking over it.
@@ -72,6 +74,9 @@ type liveBackend struct {
 	thinkingPosted bool            // the conversation has been told the request is with the backend
 	sentMs         int             // how much microphone audio the session has been sent: the same clock
 	replyInMs      int             // sentMs when the model began to answer; -1 before
+	quietMax       float64         // the loudest piece of the model's voice judged a pause, for the log
+	gotMs, fwdMs   int             // the model's voice received and passed on in this reply, in ms, for the log
+	saidEndMs      int             // where the model's own clock puts the end of its last word
 	overlap        strings.Builder // what the person has said since the model began to speak
 	speaking       bool            // voiced audio is flowing
 	silentMs       int             // the pause so far inside a reply
@@ -351,6 +356,7 @@ func (b *liveBackend) handle(cl *live.Client, e live.Event) {
 				"mic_sent_ms", b.sentMs, "last_word_ended_ms", b.heardEndMs)
 		}
 		b.said.WriteString(e.Delta)
+		b.saidEndMs = max(b.saidEndMs, e.EndMs)
 		b.mu.Unlock()
 
 	case "session.output_audio.delta":
@@ -453,10 +459,15 @@ func (b *liveBackend) onHeard(e live.Event) {
 
 // onVoice takes a tenth of a second or so of the model's voice, at 24 kHz.
 func (b *liveBackend) onVoice(samples []int16) {
-	voiced := live.RMS(samples) > voicedRMS // judged before any boost: the level it was spoken at
+	level := live.RMS(samples)
+	voiced := level > voicedRMS // judged before any boost: the level it was spoken at
 	samples = live.Boost(samples, config.Get().Brain.LiveBoost)
 	ms := len(samples) * 1000 / live.SampleRate
 	b.mu.Lock()
+	b.gotMs += ms
+	if !voiced {
+		b.quietMax = max(b.quietMax, level)
+	}
 	if b.dropping {
 		if voiced {
 			b.mu.Unlock()
@@ -480,6 +491,9 @@ func (b *liveBackend) onVoice(samples []int16) {
 		b.silentMs = 0
 		forward = append(b.held, out)
 		b.held = nil
+		for _, f := range forward {
+			b.fwdMs += len(f) * 1000 / speaker.VoiceRate
+		}
 	} else {
 		b.silentMs += ms
 		b.held = append(b.held, out)
@@ -496,6 +510,9 @@ func (b *liveBackend) onVoice(samples []int16) {
 	var said string
 	if ended {
 		said = cleanSaid(b.said.String())
+		slog.Info("live: reply audio", "received_ms", b.gotMs, "passed_on_ms", b.fwdMs, "held_back_ms", len(b.held)*100,
+			"words_end_ms", b.saidEndMs, "text_chars", len(said), "loudest_pause_rms", int(b.quietMax))
+		b.gotMs, b.fwdMs, b.saidEndMs, b.quietMax = 0, 0, 0, 0
 		b.speaking, b.held, b.silentMs, b.replyFrom, b.replyInMs = false, nil, 0, -1, -1
 		b.overlap.Reset()
 		b.said.Reset()

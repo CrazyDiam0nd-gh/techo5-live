@@ -15,6 +15,7 @@ import (
 	"github.com/gorilla/websocket"
 
 	"github.com/HuskerMinion/techo5/echod/internal/config"
+	"github.com/HuskerMinion/techo5/echod/internal/hardware/speaker"
 	"github.com/HuskerMinion/techo5/echod/internal/lib/live"
 	"github.com/HuskerMinion/techo5/echod/internal/lib/realtime"
 )
@@ -915,5 +916,35 @@ func TestLiveMayOfferMusicOnlyWhereItCanPlayIt(t *testing.T) {
 	}
 	if s := instructionsForLive(without); strings.Contains(s, "offer once") {
 		t.Error("it is told to offer music with no way to play it")
+	}
+}
+
+// A quiet voice is still a voice: its soft words sit under the old cutoff and were thrown away as pauses, which
+// cut short replies to a half.
+func TestLiveAQuietVoiceIsNotCutShort(t *testing.T) {
+	b, events, f := liveSetup(t, nil)
+	defer b.shutdown()
+	f.heard(" Hello", 400)
+	n := live.SampleRate / 10
+	quiet := make([]int16, n)
+	for i := range quiet {
+		quiet[i] = int16(300 * math.Sin(2*math.Pi*300*float64(i)/live.SampleRate)) // RMS about 210
+	}
+	soft := map[string]any{"type": "session.output_audio.delta", "delta": base64.StdEncoding.EncodeToString(live.Bytes(quiet))}
+	for range 6 {
+		f.send(soft)
+	}
+	f.voice(false, 14)
+	got := waitFor(t, events, evStreamEnd)
+	var all []int16
+	for _, e := range got {
+		if e.kind == evStreamAudio {
+			all = append(all, live.PCM16(e.audio)...)
+		}
+	}
+	// Six tenths of a second were spoken; at the speaker's rate that is this many samples, give or take the resampler.
+	want := 6 * speaker.VoiceRate / 10
+	if len(all) < want*9/10 {
+		t.Errorf("%d samples of a %d-sample quiet reply were passed on", len(all), want)
 	}
 }
