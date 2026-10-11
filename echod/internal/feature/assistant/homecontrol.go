@@ -206,7 +206,7 @@ func homeStatus(list []hass.Exposed, query string) string {
 		sort.Strings(parts)
 		return fmt.Sprintf("%d devices are available: %s. Ask about one by name or room.", len(list), strings.Join(parts, ", "))
 	}
-	found := match(list, query)
+	found := withSquashed(list, query, match(list, query))
 	if len(found) == 0 {
 		return "no device matches " + query
 	}
@@ -285,6 +285,40 @@ func match(list []hass.Exposed, query string) []hass.Exposed {
 			}
 		}
 		if ok {
+			found = append(found, e)
+		}
+	}
+	return found
+}
+
+// squash is a name with everything but letters and digits taken out, so "desk pc" and "DeskPC" are the same.
+func squash(s string) string {
+	var b strings.Builder
+	for _, r := range strings.ToLower(s) {
+		if r >= 'a' && r <= 'z' || r >= '0' && r <= '9' {
+			b.WriteRune(r)
+		}
+	}
+	return b.String()
+}
+
+// withSquashed adds to a status answer the devices whose name holds the query once spaces and punctuation are
+// ignored: "desk pc" then finds "DeskPC KDE" and its sensors, which no whole word of the query matches. Only a
+// question uses this; commands keep to match, so a spelling that is only close never operates a device.
+func withSquashed(list []hass.Exposed, query string, found []hass.Exposed) []hass.Exposed {
+	want := squash(query)
+	if len(want) < 4 {
+		return found
+	}
+	have := map[string]bool{}
+	for _, e := range found {
+		have[e.ID] = true
+	}
+	for _, e := range list {
+		if have[e.ID] {
+			continue
+		}
+		if strings.Contains(squash(e.Name+" "+e.Area+" "+strings.Join(e.Aliases, " ")), want) {
 			found = append(found, e)
 		}
 	}

@@ -336,7 +336,7 @@ func TestAStopCoversThisDeviceOnlyWhenItDoes(t *testing.T) {
 func TestASlowAnswerIsNotAFailure(t *testing.T) {
 	for _, err := range []error{
 		context.DeadlineExceeded,
-		fmt.Errorf("pop-os: %w", context.DeadlineExceeded),
+		fmt.Errorf("desk-pc: %w", context.DeadlineExceeded),
 		errors.New(`Post "http://x/api/services/music_assistant/play_media": net/http: request canceled (Client.Timeout exceeded while awaiting headers)`),
 		errors.New("context deadline exceeded"),
 	} {
@@ -369,5 +369,29 @@ func TestPausingWhateverIsPlayingStartsByLooking(t *testing.T) {
 		if !strings.Contains(resumeNote, want) {
 			t.Errorf("what home_control is told lacks %q", want)
 		}
+	}
+}
+
+func TestStatusIgnoresSpacesAndPunctuation(t *testing.T) {
+	list := append(house(),
+		hass.Exposed{ID: "media_player.desk_pc_6", Domain: "media_player", Name: "desk-pc", State: "idle"},
+		hass.Exposed{ID: "sensor.vm_103_status", Domain: "sensor", Name: "DeskPC KDE Status", State: "running"},
+		hass.Exposed{ID: "sensor.vm_103_last_boot", Domain: "sensor", Name: "DeskPC KDE Last boot", State: "2026-10-10T10:54:03+00:00"},
+	)
+	got := homeStatus(list, "desk pc")
+	for _, want := range []string{"desk-pc", "DeskPC KDE Status", "DeskPC KDE Last boot"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("missing %q in %q", want, got)
+		}
+	}
+	if got := homeStatus(list, "Desk!_PC"); !strings.Contains(got, "DeskPC KDE Last boot") {
+		t.Errorf("punctuation: %q", got)
+	}
+	if got := homeStatus(list, "tv"); strings.Contains(got, "DeskPC") {
+		t.Errorf("a short query must not match by squashed text: %q", got)
+	}
+	// A command never uses the loose match: it must not operate a device that is only a close spelling.
+	if _, err := homeControl(list, "desk pc kde", "turn_off", 0, false, "", false, func(string, string, map[string]any) error { return nil }); err == nil {
+		t.Error("a command matched by squashed text")
 	}
 }
