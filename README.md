@@ -1,3 +1,5 @@
+> **Unofficial fork.** This copy adds *Live voice*: interrupt the assistant mid-sentence, or talk over it in full duplex, using your own OpenAI account. It is not part of TECHO5 and not supported by its maintainer. See [docs/live-voice.md](docs/live-voice.md).
+
 <p align="center">
   <img src="logo/TECHO5_logo.png" alt="TECHO5" width="220">
 </p>
