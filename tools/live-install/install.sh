@@ -86,8 +86,16 @@ else
 	slot=$("${SSH[@]}" 'cat /run/techo5/slot')
 	STATE=${STATE_DIR:-$HOME/.techo5-live}
 	mkdir -p "$STATE"
-	stockimg=$STATE/show-stock-slot-$slot.tar.gz
-	if [ ! -s "$stockimg" ]; then
+	stockimg=$STATE/show-stock.tar.gz
+	# Is the running slot already a live-conversation build? Then it is not the stock firmware, and the OTHER slot is.
+	if "${SSH[@]}" "grep -aq gpt-live-1 /store/slots/$slot/usr/local/bin/techo5"; then
+		if [ ! -s "$stockimg" ]; then
+			echo "The Show already runs a live-conversation build and there is no saved stock image ($stockimg)." >&2
+			echo "The other slot is the stock firmware and would be replaced. Copy a stock image there first, or put the other slot's contents aside." >&2
+			exit 1
+		fi
+		[ -n "${OVERWRITE_STOCK:-}" ] || { echo "The Show already runs a live-conversation build; the other slot holds the stock firmware and would be replaced (a copy is in $stockimg). Run with OVERWRITE_STOCK=1 to go on." >&2; exit 1; }
+	elif [ ! -s "$stockimg" ]; then
 		echo "saving the running slot ($slot) as a stock image on this computer: $stockimg"
 		"${SSH[@]}" "tar -C /store/slots/$slot -cf - ." | gzip > "$stockimg.part"
 		gzip -t "$stockimg.part" && mv -f "$stockimg.part" "$stockimg"
@@ -102,6 +110,6 @@ else
 	copy_checked "$img" /tmp/rootfs-live.tar.gz
 	"${SSH[@]}" '/usr/local/sbin/slotctl install /tmp/rootfs-live.tar.gz; rm -f /tmp/rootfs-live.tar.gz; /usr/local/sbin/slotctl status'
 	echo "Done. Reboot the Show to start it (it falls back to slot $slot if the new one fails)."
-	echo "Stock image kept at $stockimg; restore.sh uses it."
+	echo "Stock image kept at $stockimg; restore.sh can put it back."
 fi
 echo "Then: setup page > Sound & Voice > Voice > Voice assistant > Live conversation / Live voice."
