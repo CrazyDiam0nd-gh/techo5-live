@@ -27,6 +27,13 @@ type Brain struct {
 	// model looks things up there and reads the pages it finds. Empty is no looking anything up.
 	Search string `json:"search,omitempty"`
 
+	// Bridge is the address of a bridge service, like http://192.168.1.20:8765, that the model may ask for what
+	// it cannot do itself: calculations, other places' times, anything that needs looking up. It is offered
+	// to the model as the tool ask_bridge, in every way of answering that has tools, and only when BridgeKey
+	// is set too. BridgeKey is a secret like Key: never shown again once saved.
+	Bridge    string `json:"bridge,omitempty"`
+	BridgeKey string `json:"bridge_key,omitempty"`
+
 	// LiveVoice, LiveModel and LiveBackend are for BrainLive: the model's own voice (marin when empty),
 	// the live model (gpt-live-1) and the model it hands the thinking and the tools to (see lib/live).
 	LiveVoice   string `json:"live_voice,omitempty"`
@@ -84,15 +91,21 @@ func (b Brain) Live() bool {
 	return b.Mode == BrainLive && b.Key != ""
 }
 
+// BridgeReady is whether there is a bridge the model may ask: its address and its key are both set.
+func (b Brain) BridgeReady() bool {
+	return b.Bridge != "" && b.BridgeKey != ""
+}
+
 type BrainWriter struct{ st *Store }
 
-// Set replaces everything but the key, which only SetKey changes: a form that shows the key as
-// "set" and posts nothing for it must not clear it.
+// Set replaces everything but the keys, which only SetKey and SetBridgeKey change: a form that shows
+// a key as "set" and posts nothing for it must not clear it.
 func (w BrainWriter) Set(b Brain) error {
 	return w.st.Update(func(c *Config) {
-		key := c.Brain.Key
+		key, bridgeKey := c.Brain.Key, c.Brain.BridgeKey
 		c.Brain = b
 		c.Brain.Key = key
+		c.Brain.BridgeKey = bridgeKey
 	})
 }
 
@@ -104,4 +117,9 @@ func (w BrainWriter) SetVoice(voice string) error {
 
 func (w BrainWriter) SetKey(key string) error {
 	return w.st.Update(func(c *Config) { c.Brain.Key = key })
+}
+
+// SetBridgeKey changes the bridge's key alone ("" removes it).
+func (w BrainWriter) SetBridgeKey(key string) error {
+	return w.st.Update(func(c *Config) { c.Brain.BridgeKey = key })
 }
