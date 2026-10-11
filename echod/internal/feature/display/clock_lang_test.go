@@ -21,6 +21,7 @@ import (
 // written there to look at.
 func TestClockInTheScreensLanguage(t *testing.T) {
 	config.Use(filepath.Join(t.TempDir(), "state.json"))
+	previewFont(t)
 	t.Cleanup(func() {
 		_ = config.Set().Screen().ClockStyle("")
 		_ = config.Set().Screen().Language("")

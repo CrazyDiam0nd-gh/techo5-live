@@ -75,6 +75,8 @@ func (f *Feature) serve(w http.ResponseWriter, r *http.Request) {
 		f.photo(w, r)
 	case "/setup/sound":
 		f.sound(w, r)
+	case "/setup/font":
+		f.font(w, r)
 	case "/setup/diagnostics.txt":
 		f.diagnostics(w, r)
 	default:
@@ -201,6 +203,11 @@ func (f *Feature) save(w http.ResponseWriter, r *http.Request) {
 			ssid = other
 		}
 		problem = joinWifi(r.Context(), ssid, r.PostFormValue("passphrase"))
+	case "address":
+		var handled bool
+		if problem, handled = saveAddress(w, r); handled {
+			return
+		}
 	case "forget":
 		ssid := strings.TrimSpace(r.PostFormValue("ssid"))
 		if err := wifi.Forget(r.Context(), ssid); err != nil {
@@ -246,8 +253,14 @@ func (f *Feature) save(w http.ResponseWriter, r *http.Request) {
 		problem = removeSound(r.PostFormValue("name"))
 	case "sound-play":
 		problem = playSound(r.PostFormValue("name"))
+	case "font-remove":
+		problem = removeFont(r)
 	case "reolink":
 		problem = saveReolink(r)
+	case "doorbell":
+		problem = saveDoorbell(r)
+	case "doorbell-chime":
+		chimeDoorbell()
 	case "talkback":
 		problem = saveTalkBack(r)
 	case "lock":
@@ -365,15 +378,18 @@ func (f *Feature) settingsPage(ctx context.Context, w http.ResponseWriter, token
 	case "connections":
 		if wifi.Available() {
 			f.wifiSection(w, token, scan)
+			addressSection(w, token)
 		} else {
 			fmt.Fprint(w, `<fieldset><legend>Wi-Fi</legend><p class="note" style="margin:0">This device's network
 			 is not one this page can change.</p></fieldset>`)
 		}
 		reolinkSection(w, token)
+		doorbellSection(w, token)
 		talkBackSection(w, token)
 		dashboardSection(w, token)
 	case "photos":
 		screenSection(w, token)
+		ownFontsSection(w, token)
 		dashboardPanelSection(w, token)
 		deckSection(w, token)
 		videoSection(w, token)

@@ -111,6 +111,9 @@ Which to use, how to set it up and what each can do: **[docs/dashboards.md](docs
 </tr>
 </table>
 
+- 🔔 **A doorbell chime for Reolink doorbells** (v1.2.5). With the doorbell on a Reolink Home Hub or
+  NVR, a press rings a classic three-tone door chime and puts its camera up on a Show or Spot, with no
+  Home Assistant needed. [docs/setup.md](docs/setup.md#a-doorbell)
 - 🔊 **Fuller sound** (v1.0.0). Music no longer sounds flat or dips when the bass hits: the volume
   now goes in front of the speaker's own tuning, as on Amazon's software, so the limiter only works
   near the top of the dial. Every volume step is as loud as it was. On every Echo.
@@ -175,7 +178,9 @@ Which to use, how to set it up and what each can do: **[docs/dashboards.md](docs
 - 🔁 **A Restart button** in Home Assistant for every device (v0.8.13): restarts the TECHO5 software
   the way an update does, for when something is stuck and you'd rather not unplug it.
 - 🌧️ **Sleep sounds** (v0.8.14). "Play the sounds of rain" no longer brings up the forecast, and a
-  sound file served by Home Assistant shows its own name on the now-playing page.
+  sound file served by Home Assistant shows its own name on the now-playing page. The sound comes
+  from Home Assistant: a ready-made automation is in
+  [docs/actions.md](docs/actions.md#play-rain-sounds-by-voice).
 - 🎙️ **More by voice**, with ready-made Home Assistant automations in
   [docs/actions.md](docs/actions.md#set-cancel-and-list-alarms-and-change-the-volume-by-voice):
   set, cancel and list alarms ("cancel the 6 AM alarm", "what alarms do I have"), and change the

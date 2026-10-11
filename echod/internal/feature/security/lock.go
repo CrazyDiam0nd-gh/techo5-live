@@ -46,7 +46,7 @@ var ErrPIN = errors.New("a PIN is 4 to 8 digits")
 // LockSet is whether a PIN is set.
 func LockSet() bool { return webPages && config.Get().Security.LockPIN != "" }
 
-// Locked is whether the settings screen asks for the PIN now.
+// Locked is whether the settings behind the lock ask for the PIN now.
 func Locked() bool {
 	if !LockSet() {
 		return false

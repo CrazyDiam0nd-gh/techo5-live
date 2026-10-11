@@ -11,6 +11,8 @@ import (
 	"github.com/HuskerMinion/techo5/echod/internal/config"
 	"github.com/HuskerMinion/techo5/echod/internal/feature/announce"
 	"github.com/HuskerMinion/techo5/echod/internal/feature/dashboard"
+	"github.com/HuskerMinion/techo5/echod/internal/feature/home"
+	"github.com/HuskerMinion/techo5/echod/internal/feature/notify"
 	"github.com/HuskerMinion/techo5/echod/internal/feature/remind"
 	"github.com/HuskerMinion/techo5/echod/internal/feature/setup"
 	"github.com/HuskerMinion/techo5/echod/internal/feature/video"
@@ -50,7 +52,7 @@ func (d *Display) openDashboard() bool {
 		return false
 	}
 	d.mu.Lock()
-	d.dash, d.dashHeld, d.dashTouched = true, false, time.Now()
+	d.dash, d.dashHeld, d.dashTouched, d.dashNight = true, false, time.Now(), false
 	d.drawer, d.sheet, d.deckUp = false, false, false
 	d.mu.Unlock()
 	slog.Info("dashboard up", "mode", dashboard.Get().Mode())
@@ -58,11 +60,39 @@ func (d *Display) openDashboard() bool {
 	return true
 }
 
+// openNightDashboard is openDashboard from a tap on the night screen: the dashboard then shows over the
+// night clock until it goes (dashNight).
+func (d *Display) openNightDashboard() bool {
+	if !d.openDashboard() {
+		return false
+	}
+	d.mu.Lock()
+	d.dashNight = true
+	d.mu.Unlock()
+	return true
+}
+
+// overNight is whether something is up over the night screen (a camera, an announcement, a reminder,
+// a notification), which a tap there is for rather than for the dashboard.
+func (d *Display) overNight() bool {
+	if _, up := home.Get().Camera(); up {
+		return true
+	}
+	if _, up := notify.Get().Showing(); up {
+		return true
+	}
+	if _, up := announce.Get().Showing(); up {
+		return true
+	}
+	_, up := remind.Get().Showing()
+	return up
+}
+
 // closeDashboard takes the dashboard down: back to the clock, and when the dashboard is the idle page,
 // the clock for a while.
 func (d *Display) closeDashboard() {
 	d.mu.Lock()
-	d.dash, d.dashEdge = false, edgeNone
+	d.dash, d.dashEdge, d.dashNight = false, edgeNone, false
 	if dashboard.Get().Idle() {
 		d.dashAwayUntil = time.Now().Add(dashAway)
 	}
@@ -77,7 +107,7 @@ func (d *Display) closeDashboard() {
 func (d *Display) dashboardAsked(up bool) {
 	d.mu.Lock()
 	if up {
-		d.dash, d.dashHeld, d.dashTouched, d.dashAwayUntil = true, true, time.Now(), time.Time{}
+		d.dash, d.dashHeld, d.dashTouched, d.dashAwayUntil, d.dashNight = true, true, time.Now(), time.Time{}, false
 		d.deckUp = false
 		d.mu.Unlock()
 		d.wake()
@@ -100,14 +130,20 @@ func (d *Display) dashScene(s *scene, sheetOrDrawer bool) {
 	if d.dash && !d.dashHeld && dashForgotten(d.dashTouched) {
 		d.dash = false
 	}
-	asked := d.dash
+	if !d.dash {
+		d.dashNight = false
+	}
+	asked, overNight := d.dash, d.dash && d.dashNight
+	// Under the red night clock a dashboard is not seen: one not opened from the night screen is put
+	// by rather than fetched and redrawn all night for nobody.
+	hidden := s.redClock && !overNight
 	away := time.Now().Before(d.dashAwayUntil)
 	d.mu.Unlock()
 
-	want := mode != config.DashboardOff && s.phase == "idle" && !sheetOrDrawer &&
+	want := mode != config.DashboardOff && s.phase == "idle" && !sheetOrDrawer && !hidden &&
 		!s.showCamera && !s.showWeather && !s.showRadar && !s.showCalendar && !s.showDeck && !s.showWifi && !s.bt.Pairing &&
 		(asked || (f.Idle() && !away && !s.nowPlaying))
-	s.showDash, s.dashMode = want, mode
+	s.showDash, s.dashMode, s.dashAsked = want, mode, want && overNight
 
 	streamed := want && mode == config.DashboardStreamed
 	if streamed && d.r != nil {
@@ -158,16 +194,17 @@ func (d *Display) dashScene(s *scene, sheetOrDrawer bool) {
 }
 
 // overDashboard is whether something that acts on a tap alone is drawn over the dashboard: a
-// reminder's card, an event's pop-up, the PIN pad, the setup page's Allow and Deny, an announcement
+// reminder's or a notification's card, an event's pop-up, the PIN pad, the setup page's Allow and Deny, an announcement
 // arriving or being recorded, a DLNA video asking to be shown, or the video page.
 func (d *Display) overDashboard(s *scene) bool {
 	_, announcing := announce.Get().Showing()
 	_, reminding := remind.Get().Showing()
+	_, notifying := notify.Get().Card()
 	_, _, _, videoAsking := video.Get().Asking()
 	// The video's own state, not videoUp: that is what the last frame drew, and videoScene runs after
 	// this one, so the first frame of a video would still hold. The alert page is drawn in the
 	// dashboard's place (alertScene runs before this).
-	return s.pin.open || setup.Get().Waiting() || announce.Get().Recording() || announcing || reminding ||
+	return s.pin.open || setup.Get().Waiting() || announce.Get().Recording() || announcing || reminding || notifying ||
 		d.popupUp() != nil || videoAsking || d.videoUp() || video.Get().State().Active() || s.showAlert
 }
 

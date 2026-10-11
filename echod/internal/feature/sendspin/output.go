@@ -369,9 +369,11 @@ func (o *out) queuedMs() int {
 }
 
 // setVolume and setMuted go through the device's own player rather than the speaker underneath it: it
-// owns the level, shows it in Home Assistant and remembers it across a restart.
+// owns the level, shows it in Home Assistant and remembers it across a restart. In quiet hours a raise
+// stops at the night volume, as Spotify's does, and the level reported back moves the slider to it.
 func (o *out) setVolume(volume int) {
-	media.Get().Set(max(0, min(volume, 100)) * speaker.VolumeSteps / 100)
+	p := media.Get()
+	p.Set(p.CapRaise(max(0, min(volume, 100)) * speaker.VolumeSteps / 100))
 }
 
 func (o *out) setMuted(muted bool) { media.Get().Mute(muted) }

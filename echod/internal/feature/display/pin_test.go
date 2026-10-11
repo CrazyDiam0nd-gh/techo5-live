@@ -4,7 +4,9 @@ package display
 
 import (
 	"path/filepath"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/HuskerMinion/techo5/echod/internal/config"
 	"github.com/HuskerMinion/techo5/echod/internal/feature/security"
@@ -34,7 +36,7 @@ func TestTheLockIsOnTheRowsNotTheDoor(t *testing.T) {
 	for _, id := range []string{"alarm:a1", "e.hour", "timer:t1", "newtimer", "snooze", "alarmsound",
 		"volume", "bass", "mic", "sleep", "brightness", "auto"} {
 		ran := false
-		gate(id, up, func() { ran = true })
+		gate(id, id, up, func() { ran = true })
 		if !ran || pinIsOpen() {
 			t.Errorf("%s: ran %v, pad up %v; an everyday setting changes without the PIN", id, ran, pinIsOpen())
 		}
@@ -43,7 +45,7 @@ func TestTheLockIsOnTheRowsNotTheDoor(t *testing.T) {
 	ran := 0
 	tap := func() { ran++ }
 	for range 10 {
-		gate("ssh", up, tap)
+		gate("ssh", "SSH", up, tap)
 	}
 	if ran != 0 || !pinIsOpen() {
 		t.Fatalf("ssh: ran %d times, pad up %v; want the pad and no change", ran, pinIsOpen())
@@ -60,17 +62,28 @@ func TestTheLockIsOnTheRowsNotTheDoor(t *testing.T) {
 	if ran != 1 || pinIsOpen() || security.Locked() {
 		t.Fatalf("the right PIN: ran %d, pad up %v, locked %v", ran, pinIsOpen(), security.Locked())
 	}
-	gate("wakeword", up, tap)
+	gate("wakeword", "Wake word", up, tap)
 	if ran != 2 || pinIsOpen() {
 		t.Errorf("once open, another locked setting: ran %d, pad up %v", ran, pinIsOpen())
 	}
 
-	// The settings closed while the PIN was being typed: nothing behind them changes.
+	// The settings closed while the PIN was being typed: nothing behind them changes, and the lock
+	// stays on for whoever opens them next.
 	security.Relock()
-	gate("ssh", func() bool { return false }, tap)
+	gate("ssh", "SSH", func() bool { return false }, tap)
+	if p := pinNow(time.Now()); p.what != "SSH" {
+		t.Errorf("the pad is for %q, want SSH", p.what)
+	}
 	typePIN("2468")
-	if ran != 2 {
-		t.Errorf("a setting changed behind settings that had closed")
+	if ran != 2 || !security.Locked() {
+		t.Errorf("behind settings that had closed: ran %d, locked %v; want nothing changed and the lock on", ran, security.Locked())
+	}
+
+	// A nil tap is the PIN opening the lock and nothing more.
+	gate("theme", "", up, nil)
+	typePIN("2468")
+	if security.Locked() || pinIsOpen() {
+		t.Errorf("the PIN alone: locked %v, pad up %v", security.Locked(), pinIsOpen())
 	}
 }
 
@@ -85,10 +98,28 @@ func TestWhichRowsAreEveryday(t *testing.T) {
 			}
 		}
 	}
-	for _, id := range []string{"wakeword", "wakesens", "voice", "quiet", "dnd", "night", "theme", "slideshow",
+	for _, id := range []string{"wakeword", "wakesens", "ttsvoice", "quiet", "dnd", "night", "theme", "slideshow",
 		"airplay", "spotify", "dlna", "sendspin", "settingslock", "ssh", "updates", "restart", "", "unknown"} {
 		if everyday(id) {
 			t.Errorf("%q is open while the lock is on", id)
+		}
+	}
+	// The two mixed categories: only what the lock leaves open by name is open there.
+	open := map[category][]string{}
+	for _, cat := range []category{catDisplay, catSound} {
+		rows, _ := categoryRows(sheetView{st: settings{cat: cat, auto: true}})
+		for _, row := range rows {
+			if row.id != "" && everyday(row.id) {
+				open[cat] = append(open[cat], row.id)
+			}
+		}
+	}
+	if got := strings.Join(open[catDisplay], " "); got != "brightness auto dimmest" && got != "brightness auto" {
+		t.Errorf("Display: open rows %q, want the brightness ones", got)
+	}
+	for _, id := range open[catSound] {
+		if !strings.Contains(" volume bass treble output mic waketone sleep ", " "+id+" ") {
+			t.Errorf("Sound: %q is open", id)
 		}
 	}
 	for _, row := range alarmsCard(sheetView{st: settings{cat: catAlarms}}).rows {

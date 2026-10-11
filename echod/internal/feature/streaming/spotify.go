@@ -2,13 +2,16 @@ package streaming
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"io"
 	"log/slog"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"syscall"
 	"time"
@@ -40,12 +43,18 @@ cover() { printf '%s' "$COVERS" | awk 'NR == 1' | tr -d '\t\r' | cut -c1-200; }
 printf '%s\t%s\t%s\t%s\t%s\t%s\n' "$PLAYER_EVENT" "$(clean "$NAME")" "$(artists)" "$(clean "$ALBUM")" "$(cover)" "$(clean "$VOLUME")" 1<>"$TECHO5_SPOTIFY_EVENTS"
 `
 
-// The Spotify app's volume slider turns the device's volume up and down. librespot scales what it sends
-// by the slider whatever it is told (its "fixed" control in 0.8 still scales), so it is told to scale
+// The Spotify app's volume slider and the device's volume are one. The librespot build-librespot.sh
+// makes takes volumes from outside (--volume-fifo, librespot-volume-fifo.patch) and passes the audio on
+// unscaled: the device's volume is handed to it as a phone connects and whenever it changes, by the
+// buttons, Home Assistant or night volume alike, so the app's slider shows it, and a move of the slider
+// sets the device's volume to where the slider is (spotifySync).
+//
+// An older librespot, from an image made before that, takes no volume from outside and scales what it
+// sends by the slider whatever it is told (its "fixed" control in 0.8 still scales). It is told to scale
 // linearly, which the pump undoes exactly (spotifyLevel), and each move of the slider moves the device
-// by as many steps as it moved. By as many, not to the same place: librespot takes no volume from
-// outside, so the device's buttons do not move the app's slider, and a slider that says 100% over a
-// device at 8 would otherwise send it to nearly full at the first nudge down.
+// by as many steps as it moved (slider). By as many, not to the same place: its slider does not follow
+// the device's buttons, and a slider that says 100% over a device at 8 would otherwise send it to
+// nearly full at the first nudge down.
 //
 // librespot also says its volume as a phone connects, which is only where it was left, and may say it
 // more than once: everything it says in the moments after a connect only marks where the slider is.
@@ -89,6 +98,9 @@ func spotifyQueued() int {
 // spotifyStep is the device's volume step for the app's level.
 func spotifyStep(v int) int { return (v*media.VolumeSteps + spotifyFull/2) / spotifyFull }
 
+// spotifyValue is the app's level for the device's volume step: the one spotifyStep takes back to it.
+func spotifyValue(step int) int { return (step*spotifyFull + media.VolumeSteps/2) / media.VolumeSteps }
+
 // connectQuiet is how long after a phone connects a volume is only librespot saying where it was.
 const connectQuiet = 3 * time.Second
 
@@ -104,6 +116,135 @@ func (s *slider) moved(v int, connecting bool) int {
 		return 0
 	}
 	return spotifyStep(v) - spotifyStep(prev)
+}
+
+// echoWait is how long a level handed to librespot may take to come back as the app's.
+const echoWait = 3 * time.Second
+
+// spotifySync keeps the app's slider and the device's volume as one, with a librespot that takes
+// volumes from outside.
+//
+// librespot says every volume it is given back as the app's, so a level heard that was handed to it
+// moments ago is its own coming back, and is let by: taken as the app's it could pull the device back
+// to where it was a moment ago, since the programs that say the levels finish in no set order. A level
+// the device took from the slider is not handed back, which would fight a slider still being dragged,
+// unless the device ended somewhere else (night volume stopped a raise), so the slider shows that.
+type spotifySync struct {
+	write  func(v int) bool // hands librespot a level; false when it was not taken
+	device func() int       // the device's volume step
+	set    func(step int)   // sets the device's volume step
+	most   func(to int) int // the most a raise may take the device to (media.CapRaise)
+	now    func() time.Time
+
+	mu     sync.Mutex
+	active bool              // a phone is connected: librespot takes a volume only then
+	shown  int               // the step the app's slider is at, as far as is known; -1 for not known
+	sent   map[int]time.Time // levels handed to librespot, and when
+}
+
+func newSpotifySync() *spotifySync {
+	return &spotifySync{shown: -1, sent: map[int]time.Time{}, now: time.Now}
+}
+
+// session is a phone connecting, or going: one that connects is told the device's volume.
+func (s *spotifySync) session(connected bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.active, s.shown = connected, -1
+	clear(s.sent)
+	s.tellLocked(s.device())
+}
+
+// heard takes a level librespot said, 0..spotifyFull; connecting when it came in the moments after a
+// phone connected.
+func (s *spotifySync) heard(v int, connecting bool) {
+	s.mu.Lock()
+	if at, ok := s.sent[v]; ok && s.now().Sub(at) <= echoWait {
+		s.mu.Unlock()
+		return
+	}
+	// librespot says a volume only while a phone is connected: one heard before the connect's own line
+	// (the programs that say them finish in no set order) is the connect's too, and like the connect's
+	// is only where librespot was left. The device's level stands, and the app is told it.
+	if connecting || !s.active {
+		s.active = true
+		s.tellLocked(s.device())
+		s.mu.Unlock()
+		return
+	}
+	step := spotifyStep(v)
+	s.shown = step
+	from, to := s.device(), step
+	if to > from {
+		to = s.most(to)
+	}
+	s.mu.Unlock()
+	switch {
+	case to != from:
+		s.set(to) // levelChanged tells the app if it ended somewhere other than the slider
+	case to != step:
+		s.tell(to)
+	}
+}
+
+// levelChanged is the device's volume changing, for whatever reason: the app's slider is moved to it
+// unless it is there already.
+func (s *spotifySync) levelChanged(step int) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if step != s.shown {
+		s.tellLocked(step)
+	}
+}
+
+func (s *spotifySync) tell(step int) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.tellLocked(step)
+}
+
+// tellLocked hands librespot the device's step while a phone is connected. Called with mu held: write
+// never waits.
+func (s *spotifySync) tellLocked(step int) {
+	if !s.active {
+		return
+	}
+	now := s.now()
+	for v, at := range s.sent {
+		if now.Sub(at) > echoWait {
+			delete(s.sent, v)
+		}
+	}
+	v := spotifyValue(step)
+	if !s.write(v) {
+		return
+	}
+	s.sent[v], s.shown = now, step
+}
+
+// writeSpotifyVolume hands librespot a level through its volume pipe, and says whether it took it.
+// Nothing waits: with librespot not running there is nobody to open the pipe to and the level is
+// dropped, as it is when the pipe is full, which a librespot that stopped reading would leave it.
+// A line is far shorter than the pipe's atomic write, so it goes whole or not at all.
+func writeSpotifyVolume(path string, v int) bool {
+	fd, err := unix.Open(path, unix.O_WRONLY|unix.O_NONBLOCK|unix.O_CLOEXEC, 0)
+	if err != nil {
+		return false
+	}
+	defer unix.Close(fd)
+	line := []byte(strconv.Itoa(v) + "\n")
+	n, err := unix.Write(fd, line)
+	return err == nil && n == len(line)
+}
+
+// librespotTakesVolume is whether the image's librespot takes volumes from outside (--volume-fifo):
+// one from an image made before build-librespot.sh patched it in does not, and would refuse to start
+// if it were given one. A variable for the tests.
+var librespotTakesVolume = func() bool {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	out, _ := exec.CommandContext(ctx, librespotPath, "--help").Output()
+	return bytes.Contains(out, []byte("--volume-fifo"))
 }
 
 // spotifyPort is where librespot listens for the Spotify app handing it a login: fixed, so a firewall
@@ -142,6 +283,18 @@ func runSpotifyReceiver(ctx context.Context, name string) {
 	spotifyPipe.Store(r)
 	defer spotifyPipe.Store(nil)
 	cred := receiverCred()
+	// The device's volume goes to librespot through a pipe, when it can take it.
+	volume := ""
+	if librespotTakesVolume() {
+		path := filepath.Join(runDir, "spotify-volume")
+		_ = os.Remove(path)
+		if err := syscall.Mkfifo(path, 0o600); err != nil {
+			slog.Warn("streaming: Spotify's volume pipe failed; its slider moves the device by steps", "err", err)
+		} else {
+			handTo(cred, path)
+			volume = path
+		}
+	}
 	events := filepath.Join(runDir, "spotify-events")
 	script := filepath.Join(runDir, "spotify-event")
 	_ = os.Remove(events)
@@ -151,29 +304,35 @@ func runSpotifyReceiver(ctx context.Context, name string) {
 		slog.Warn("streaming: writing Spotify's event program failed; no song names", "err", err)
 	} else {
 		handTo(cred, events)
-		safe.Go("spotify events", func() { readSpotifyEvents(ctx, events) })
+		safe.Go("spotify events", func() { readSpotifyEvents(ctx, events, volume) })
 	}
 	cache := spotifyCache()
 	_ = os.MkdirAll(cache, 0o700)
 	_ = os.Chmod(cache, 0o700)
 	handTo(cred, cache)
-	safe.Go("spotify audio", func() { pump(ctx, home.SpotifyName, r, spotifyLevel) })
+	args := []string{
+		"--name", name,
+		"--backend", "pipe",
+		"--format", "S16",
+		"--bitrate", "160",
+		"--device-type", "speaker",
+		"--disable-audio-cache",
+		"--cache", cache,
+		"--zeroconf-port", spotifyPort,
+		"--onevent", script,
+	}
+	level := spotifyLevel
+	if volume != "" {
+		// The audio comes unscaled: there is nothing to undo.
+		args, level = append(args, "--volume-fifo", volume), nil
+	} else {
+		args = append(args, "--initial-volume", "100", "--volume-ctrl", "linear")
+	}
+	safe.Go("spotify audio", func() { pump(ctx, home.SpotifyName, r, level) })
 	supervise(ctx, program{
-		name: "librespot",
-		path: librespotPath,
-		args: []string{
-			"--name", name,
-			"--backend", "pipe",
-			"--format", "S16",
-			"--bitrate", "160",
-			"--device-type", "speaker",
-			"--disable-audio-cache",
-			"--cache", cache,
-			"--zeroconf-port", spotifyPort,
-			"--onevent", script,
-			"--initial-volume", "100",
-			"--volume-ctrl", "linear",
-		},
+		name:   "librespot",
+		path:   librespotPath,
+		args:   args,
 		stdout: w,
 		env:    []string{"TECHO5_SPOTIFY_EVENTS=" + events},
 		cred:   cred,
@@ -193,9 +352,10 @@ func librespotWorthLogging(line string) bool {
 }
 
 // readSpotifyEvents follows the event pipe, telling the media player the song and the page its cover,
-// and taking the app's volume as the device's. Opened for writing as well, so it neither waits for
-// librespot nor sees an end between events.
-func readSpotifyEvents(ctx context.Context, path string) {
+// and taking the app's volume as the device's: kept as one through the volume pipe at volume, or, with
+// none, moved by steps. Opened for writing as well, so it neither waits for librespot nor sees an end
+// between events.
+func readSpotifyEvents(ctx context.Context, path, volume string) {
 	f, err := os.OpenFile(path, os.O_RDWR, 0)
 	if err != nil {
 		slog.Warn("streaming: opening Spotify's event pipe failed", "err", err)
@@ -204,12 +364,33 @@ func readSpotifyEvents(ctx context.Context, path string) {
 	stop := context.AfterFunc(ctx, func() { f.Close() })
 	defer stop()
 	defer f.Close()
+	track := func(title, artist, album, cover string) {
+		media.Get().SetReceivedTrack(home.SpotifyName, title, artist, album)
+		home.ReceivedArt(home.SpotifyName, cover)
+	}
+	if volume != "" {
+		one := newSpotifySync()
+		one.write = func(v int) bool { return writeSpotifyVolume(volume, v) }
+		one.device = media.Get().Volume
+		one.set = media.Get().Set
+		one.most = media.Get().CapRaise
+		defer media.Get().OnLevel.Listen(one.levelChanged)()
+		followSpotifyEvents(f, spotifyEvents{
+			track: track,
+			volume: func(v int, connecting bool) {
+				if connecting {
+					slog.Info("streaming: Spotify connected", "volume", media.Get().Volume())
+				}
+				one.heard(v, connecting)
+			},
+			session: one.session,
+			now:     time.Now,
+		})
+		return
+	}
 	app := slider{last: -1}
 	followSpotifyEvents(f, spotifyEvents{
-		track: func(title, artist, album, cover string) {
-			media.Get().SetReceivedTrack(home.SpotifyName, title, artist, album)
-			home.ReceivedArt(home.SpotifyName, cover)
-		},
+		track: track,
 		volume: func(v int, connecting bool) {
 			spotifyLevel.set(spotifyGain(v), spotifyQueued())
 			by := app.moved(v, connecting)
@@ -232,7 +413,9 @@ type spotifyEvents struct {
 	// volume is the app's volume, 0..spotifyFull; connecting when it came in the moments after a phone
 	// connected, and so only says where librespot was left.
 	volume func(v int, connecting bool)
-	now    func() time.Time
+	// session, when there is one, is a phone connecting, or going.
+	session func(connected bool)
+	now     func() time.Time
 }
 
 // followSpotifyEvents reads event lines from r until it ends. A line too long to be one of the
@@ -256,10 +439,18 @@ func followSpotifyEvents(r io.Reader, on spotifyEvents) {
 		switch f[0] {
 		case "track_changed":
 			on.track(f[1], f[2], f[3], f[4])
-		case "stopped", "session_disconnected":
+		case "stopped":
 			on.track("", "", "", "")
+		case "session_disconnected":
+			on.track("", "", "", "")
+			if on.session != nil {
+				on.session(false)
+			}
 		case "session_connected":
 			connected = on.now()
+			if on.session != nil {
+				on.session(true)
+			}
 		case "volume_changed":
 			v, err := strconv.Atoi(strings.TrimSpace(f[5]))
 			if err != nil || v < 0 || v > spotifyFull {

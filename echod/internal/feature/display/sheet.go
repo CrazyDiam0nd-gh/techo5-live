@@ -105,6 +105,7 @@ func categoryRows(sv sheetView) (rows []settingRow, note string) {
 		rows = append(rows, settingRow{label: "Look", kind: ctlHeading})
 		rows = append(rows, themeRows()...)
 		rows = append(rows,
+			fontRow(),
 			clockStyleRow(),
 			settingRow{id: "clock", label: "Clock format", kind: ctlChoice, value: clockOptions[clockIndex()]},
 		)
@@ -288,6 +289,9 @@ func connectionRows(sv sheetView) []settingRow {
 		wifiRow.sub = "No address yet"
 	}
 	rows := []settingRow{wifiRow}
+	if st.addressSet != "" {
+		rows = append(rows, settingRow{id: "address", label: "Network address", sub: st.addressSet, kind: ctlButton, button: "Change"})
+	}
 	switch {
 	case !bt.Available:
 		rows = append(rows, settingRow{label: "Bluetooth audio", sub: "Not available on this build", kind: ctlValue})
@@ -528,6 +532,8 @@ func pickerFor(id string, sv sheetView) (pickerView, bool) {
 		return pickerView{title: "Clock format", opts: clockOptions, cur: clockIndex()}, true
 	case "clockstyle":
 		return clockStylePicker()
+	case "font":
+		return fontPicker()
 	case "clockpos", "datecolor":
 		return clockLayoutPicker(id)
 	case "camtime":
@@ -660,6 +666,8 @@ func (d *Display) choose(id string, i int) {
 		d.setMusicStrip(i)
 	case "clockstyle":
 		d.setClockStyle(i)
+	case "font":
+		d.setFont(i)
 	case "clockpos", "datecolor":
 		d.chooseClockLayout(id, i)
 	case "clock":
@@ -793,6 +801,7 @@ func (d *Display) choose(id string, i int) {
 
 // nextTap is a finger on the settings screen.
 func (d *Display) nextTap(x, y int) {
+	stillHere()
 	z, ok := d.r.zoneAt(x, y)
 	if !ok {
 		return
@@ -816,13 +825,34 @@ func (d *Display) nextTap(x, y int) {
 		id := d.picker
 		d.picker = ""
 		d.mu.Unlock()
-		gate(id, d.sheetUp, func() { d.choose(id, z.opt) })
+		d.tapOption(id, z.label, z.opt)
 	case zoneRow:
-		gate(z.id, d.sheetUp, func() { d.rowTap(z.id, z.part, z.opt) })
+		d.tapRow(z)
 	}
 }
 
-// rowTap is a tap on a row's control, past the settings lock: nextTap asks for the PIN first.
+// tapRow is a tap on a row, through the settings lock (gate, pin.go).
+func (d *Display) tapRow(z zone) {
+	if z.id == "weather" && z.part == partExtra {
+		d.rowTap(z.id, z.part, z.opt) // the Show's forecast, which changes nothing
+		return
+	}
+	gate(z.id, z.label, d.sheetUp, func() { d.rowTap(z.id, z.part, z.opt) })
+}
+
+// tapOption is a choice in an open list, through the settings lock. A list behind the lock is open
+// while locked only when the lock came back with it up, or when it was opened from afar; the PIN then
+// opens the lock and nothing more, since the list it was chosen from has gone and may read differently
+// when it is opened again.
+func (d *Display) tapOption(id, what string, opt int) {
+	if rowLocked(id) {
+		gate(id, what, d.sheetUp, nil)
+		return
+	}
+	gate(id, what, d.sheetUp, func() { d.choose(id, opt) })
+}
+
+// rowTap is a tap on a row's control, past the settings lock: tapRow asks for the PIN first.
 func (d *Display) rowTap(id string, p part, opt int) {
 	if d.alarmRowTap(id, p, opt) {
 		return
@@ -1011,7 +1041,7 @@ func (d *Display) rowTap(id string, p part, opt int) {
 		home.Get().SetSlideshowSubfolders(!subfolders)
 	case "wholephoto":
 		home.Get().SetSlideshowWholePhoto(!home.Get().SlideshowWholePhoto())
-	case "night", "atnight", "nightstyle", "clock", "clockstyle", "clockpos", "datecolor", "camtime", "answertime", "callring", "turnstyle", "radarsrc", "calendars", "calpopwhen", "calpopallday", "calpopcals", "musicstrip", "follow", "awayoff", "slideshow", "photoevery", "screenlang", "newtimer", "sleep", "sunrise",
+	case "night", "atnight", "nightstyle", "clock", "clockstyle", "font", "clockpos", "datecolor", "camtime", "answertime", "callring", "turnstyle", "radarsrc", "calendars", "calpopwhen", "calpopallday", "calpopcals", "musicstrip", "follow", "awayoff", "slideshow", "photoevery", "screenlang", "newtimer", "sleep", "sunrise",
 		"timezone", "wakeword", "waketone", "ttsvoice", "quiet", "output", "clocktap":
 		d.openPicker(id)
 	}
@@ -1046,6 +1076,7 @@ func (d *Display) sheetSwipe(g touch.Gesture) {
 	if d.r == nil {
 		return
 	}
+	stillHere()
 	by := notchPx
 	if g.Kind == touch.SwipeDown {
 		by = -notchPx

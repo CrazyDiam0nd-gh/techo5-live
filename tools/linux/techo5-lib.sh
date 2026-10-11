@@ -285,7 +285,11 @@ t5_wifi_up() {
 		log "wifi: not associated ($(wpa_cli -p /run/wpa -i wlan0 status 2>/dev/null | grep wpa_state))"
 		return 1
 	fi
-	if ! pidof udhcpc >/dev/null; then
+	# The address: fixed when the setting says so (techo5-net, which falls back to DHCP if the fixed
+	# one does not work), else a lease.
+	if [ -x /usr/local/sbin/techo5-net ]; then
+		/usr/local/sbin/techo5-net up
+	elif ! pidof udhcpc >/dev/null; then
 		udhcpc -i wlan0 -b -R -t 10 -p /run/udhcpc.pid -s "${UDHCPC_SCRIPT:-/usr/share/udhcpc/default.script}" > /tmp/udhcpc.log 2>&1
 	fi
 	n=0; while [ $n -lt 30 ]; do
@@ -463,7 +467,15 @@ t5_bt_up() {
 	if [ -n "${BT_UART:-}" ]; then
 		(while true; do btbridge -uart "$BT_UART" ${BT_HCD:+-hcd "$BT_HCD"} ${BT_BAUD:+-baud "$BT_BAUD"} ${addr:+-bdaddr "$addr"} >> "$logdir/btbridge.log" 2>&1; sleep 2; done) &
 	else
-		(while true; do btbridge ${addr:+-bdaddr "$addr"} >> "$logdir/btbridge.log" 2>&1; sleep 2; done) &
+		# -p192-keys: a phone's link key reaches the kernel as the kind the controller's E0 encryption
+		# satisfies, so a phone can stay connected to play to the Show (#105; btbridge h4.go p192Key).
+		# The class is set again after each restart of the bridge: a new hci0 comes up with bluetoothd's
+		# default, and the Show would no longer say it is a loudspeaker.
+		(while true; do
+			btbridge -p192-keys ${addr:+-bdaddr "$addr"} >> "$logdir/btbridge.log" 2>&1
+			sleep 2
+			(sleep 15; timeout 5 btmgmt class 4 5 >/dev/null 2>&1) &
+		done) &
 	fi
 	n=0; while [ $n -lt 20 ] && [ ! -d /sys/class/bluetooth/hci0 ]; do sleep 1; n=$((n+1)); done
 	[ -d /sys/class/bluetooth/hci0 ] || { log "bt: bridge up but no hci0"; return 1; }
@@ -498,8 +510,15 @@ t5_bt_up() {
 	# reports an inquiry result or an advertisement until it has been powered off and on once.
 	n=0; while [ $n -lt 10 ] && ! timeout 3 btmgmt info 2>/dev/null | grep -q "current settings: powered"; do sleep 1; n=$((n+1)); done
 	timeout 5 btmgmt power off >/dev/null 2>&1; sleep 1; timeout 5 btmgmt power on >/dev/null 2>&1
-	# bluez-alsa registers its A2DP endpoints with bluetoothd, so it must come after it.
-	command -v bluealsa >/dev/null && bluealsa -p a2dp-source >> "$logdir/bluealsa.log" 2>&1 &
+	# bluez-alsa registers its A2DP endpoints with bluetoothd, so it must come after it. A source, to
+	# play to earbuds and speakers; on the Shows (MediaTek, no BT_UART) a sink too, so a phone can play
+	# to the Show, which then says it is a loudspeaker (major 4, audio/video; minor 5, loudspeaker).
+	if [ -z "${BT_UART:-}" ]; then
+		command -v bluealsa >/dev/null && bluealsa -p a2dp-source -p a2dp-sink >> "$logdir/bluealsa.log" 2>&1 &
+		timeout 5 btmgmt class 4 5 >/dev/null 2>&1
+	else
+		command -v bluealsa >/dev/null && bluealsa -p a2dp-source >> "$logdir/bluealsa.log" 2>&1 &
+	fi
 	log "bt: hci0 up; bluetoothd and bluealsa started"
 	return 0
 }

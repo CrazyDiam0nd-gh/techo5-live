@@ -459,7 +459,9 @@ func (s *session) once() error {
 	defer cancel()
 	live, err := hass.Get().OpenLive(ctx)
 	if err != nil {
-		s.problem("Can't reach Home Assistant.")
+		// The address the home_assistant action gave is kept until it is given again: a Home
+		// Assistant that moved is the commonest reason for this, so say where it was looked for.
+		s.problem(unreachable(hass.Get().Address()))
 		return err
 	}
 	defer live.Close()
@@ -639,3 +641,11 @@ func str(m raw, key string) string {
 type onScreen string
 
 func (s onScreen) Error() string { return string(s) }
+
+// unreachable is what a drawn dashboard says when Home Assistant does not answer at addr.
+func unreachable(addr string) string {
+	if addr == "" {
+		return "Can't reach Home Assistant."
+	}
+	return "Can't reach Home Assistant at " + addr + ". If it has moved, run the home_assistant action again with its new address."
+}

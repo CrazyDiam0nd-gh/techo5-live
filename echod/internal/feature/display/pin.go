@@ -28,6 +28,7 @@ type pinView struct {
 	digits int    // how many have been typed; the pad shows dots, never the digits
 	msg    string // what went wrong last, or empty
 	title  string // what the pad is asking for
+	what   string // the setting the PIN is for, or empty for the settings as a whole
 }
 
 var pinPad struct {
@@ -37,6 +38,7 @@ var pinPad struct {
 	msg   string
 	at    time.Time
 	after func() // what opens once the PIN is right
+	what  string // the setting it is for, shown on the pad
 
 	// setting is a new PIN being chosen rather than one being asked for: typed, then typed again, with
 	// first the first of the two.
@@ -45,10 +47,12 @@ var pinPad struct {
 }
 
 // openPIN puts the pad up for a tap on the device, with after to run once the right PIN is in: the
-// person at the device decides what the PIN is for.
-func openPIN(after func()) {
+// person at the device decides what the PIN is for. what names it on the pad, so whoever types the
+// PIN can see what it will change, since that may not be what they think it is for.
+func openPIN(what string, after func()) {
 	pinPad.mu.Lock()
 	pinPad.open, pinPad.entry, pinPad.msg, pinPad.at, pinPad.after = true, "", "", time.Now(), after
+	pinPad.what = what
 	pinPad.setting, pinPad.first = false, ""
 	pinPad.mu.Unlock()
 }
@@ -57,6 +61,7 @@ func openPIN(after func()) {
 func openPINSet() {
 	pinPad.mu.Lock()
 	pinPad.open, pinPad.entry, pinPad.msg, pinPad.at, pinPad.after = true, "", "", time.Now(), nil
+	pinPad.what = ""
 	pinPad.setting, pinPad.first = true, ""
 	pinPad.mu.Unlock()
 }
@@ -75,7 +80,7 @@ func pinNow(now time.Time) pinView {
 	case pinPad.setting:
 		title = "The same PIN again"
 	}
-	return pinView{open: pinPad.open, digits: len(pinPad.entry), msg: pinPad.msg, title: title}
+	return pinView{open: pinPad.open, digits: len(pinPad.entry), msg: pinPad.msg, title: title, what: pinPad.what}
 }
 
 func pinIsOpen() bool { return pinNow(time.Now()).open }
@@ -103,22 +108,38 @@ func everyday(id string) bool {
 func rowLocked(id string) bool { return id != "" && !everyday(id) && security.Locked() }
 
 // gate runs tap, a tap on the settings row id, now, or once the PIN is right when the row is behind the
-// lock. Taps on a locked row only put the pad up: they are no tries at the PIN, so they never count
-// toward the wait. up says whether the settings are still showing when the PIN comes in, since a
-// setting changed behind a screen that has gone is not what was asked for.
-func gate(id string, up func() bool, tap func()) {
+// lock; what is the row's name for the pad. Taps on a locked row only put the pad up: they are no tries
+// at the PIN, so they never count toward the wait. A nil tap is the PIN opening the lock and nothing
+// more.
+//
+// up says whether the settings are still showing when the PIN comes in. If they are not (closed behind
+// the pad by a timeout, a page Home Assistant put up, anything), the tap is not what anybody can see
+// any more, and the lock goes back on: a right PIN must not leave every setting open for whoever opens
+// the screen next.
+func gate(id, what string, up func() bool, tap func()) {
 	if !rowLocked(id) {
-		if security.LockSet() && !everyday(id) {
-			security.KeepOpen()
+		if tap != nil {
+			tap()
 		}
-		tap()
 		return
 	}
-	openPIN(func() {
-		if up() {
+	openPIN(what, func() {
+		if !up() {
+			security.Relock()
+			return
+		}
+		if tap != nil {
 			tap()
 		}
 	})
+}
+
+// stillHere keeps an open lock open while the settings are being touched, everyday rows and scrolling
+// included: it comes back two minutes after the last touch, not two minutes after the PIN.
+func stillHere() {
+	if security.LockSet() {
+		security.KeepOpen()
+	}
 }
 
 // sheetWasOpen is whether the settings were open at the last frame.
@@ -140,7 +161,7 @@ func relockOnClose(open bool) {
 func answerSetup(allow bool) {
 	if allow && security.Locked() {
 		asking := setup.Get().Asking()
-		openPIN(func() {
+		openPIN("Setup page", func() {
 			setup.Get().AllowAsking(asking)
 			security.Relock()
 		})

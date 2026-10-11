@@ -156,6 +156,12 @@ func (d *Display) deviceRowTap(id string, p part, opt int) bool {
 			d.showSheet(false)
 			d.openWifi()
 		}
+	case "address":
+		// The page before the sheet goes, so the settings lock never sees neither open.
+		if wifi.Available() {
+			d.openAddress()
+			d.showSheet(false)
+		}
 	default:
 		return false
 	}

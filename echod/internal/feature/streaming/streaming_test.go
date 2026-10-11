@@ -12,6 +12,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"syscall"
 	"testing"
 	"time"
 
@@ -237,6 +238,254 @@ func TestSpotifyVolumeIsTheDevicesVolume(t *testing.T) {
 		if got := spotifyGain(v); got != g {
 			t.Errorf("app volume %d undone by %v, want %v", v, got, g)
 		}
+	}
+}
+
+// Each of the device's steps is handed to librespot as a level that comes back as the same step.
+func TestEveryStepGoesToTheAppAndBack(t *testing.T) {
+	for step := range media.VolumeSteps + 1 {
+		v := spotifyValue(step)
+		if v < 0 || v > spotifyFull || spotifyStep(v) != step {
+			t.Errorf("step %d is app volume %d, which is step %d", step, v, spotifyStep(v))
+		}
+	}
+	if spotifyValue(0) != 0 || spotifyValue(media.VolumeSteps) != spotifyFull {
+		t.Errorf("the ends are %d and %d", spotifyValue(0), spotifyValue(media.VolumeSteps))
+	}
+}
+
+// fakeSpotify is a device and a librespot around a spotifySync: what librespot was handed, and the
+// device's level, set the way media.Player sets it, which tells the sync as OnLevel does.
+type fakeSpotify struct {
+	s     *spotifySync
+	step  int
+	told  []int // levels handed to librespot
+	sets  []int // levels the app set the device to
+	takes bool  // whether librespot takes what it is handed
+	night int   // the night volume in quiet hours, 0 for none
+	clock time.Time
+}
+
+func newFakeSpotify(step int) *fakeSpotify {
+	f := &fakeSpotify{step: step, takes: true, clock: time.Unix(1000, 0)}
+	s := newSpotifySync()
+	s.write = func(v int) bool {
+		if f.takes {
+			f.told = append(f.told, v)
+		}
+		return f.takes
+	}
+	s.device = func() int { return f.step }
+	s.set = func(step int) {
+		f.sets = append(f.sets, step)
+		f.press(step)
+	}
+	s.most = func(to int) int {
+		if f.night > 0 {
+			return min(to, max(f.step, f.night))
+		}
+		return to
+	}
+	s.now = func() time.Time { return f.clock }
+	f.s = s
+	return f
+}
+
+// press changes the device's level as anything but the app does: a button, Home Assistant, night volume.
+func (f *fakeSpotify) press(step int) {
+	f.step = step
+	f.s.levelChanged(step)
+}
+
+func (f *fakeSpotify) later(d time.Duration) { f.clock = f.clock.Add(d) }
+
+func values(steps ...int) []int {
+	var vs []int
+	for _, s := range steps {
+		vs = append(vs, spotifyValue(s))
+	}
+	return vs
+}
+
+// A phone that connects is told the device's level, whatever librespot was left at; after that the
+// app's slider sets the device to where it is, at once and both ways, with nothing handed back to it.
+func TestTheAppsSliderSetsTheDevice(t *testing.T) {
+	f := newFakeSpotify(8)
+	f.s.heard(65535, false) // before anything: only librespot saying where it was
+	f.s.session(true)
+	f.s.heard(65535, true)           // as the phone connected
+	f.s.heard(spotifyValue(8), true) // the device's own level coming back
+	if len(f.sets) != 0 {
+		t.Fatalf("connecting set the device to %v", f.sets)
+	}
+	if want := values(8, 8, 8); !slices.Equal(f.told, want) {
+		t.Fatalf("told librespot %v, want %v", f.told, want)
+	}
+	f.later(5 * time.Second)
+	f.told = nil
+	f.s.heard(45875, false) // 70%
+	f.s.heard(45875, false) // said again
+	f.s.heard(0, false)
+	f.s.heard(spotifyFull, false)
+	if want := []int{21, 0, 30}; !slices.Equal(f.sets, want) {
+		t.Errorf("set the device to %v, want %v", f.sets, want)
+	}
+	if len(f.told) != 0 {
+		t.Errorf("handed the app's own levels back: %v", f.told)
+	}
+}
+
+// Whatever moves the device's level moves the app's slider, while a phone is connected and only then.
+func TestTheDeviceMovesTheAppsSlider(t *testing.T) {
+	f := newFakeSpotify(8)
+	f.press(9) // nobody connected
+	f.s.session(true)
+	f.press(12)
+	f.press(12) // the same level again: the slider is there already
+	f.press(3)
+	f.s.session(false)
+	f.press(20)
+	if want := values(9, 12, 3); !slices.Equal(f.told, want) {
+		t.Errorf("told librespot %v, want %v", f.told, want)
+	}
+}
+
+// librespot says each level it is handed back as the app's: those are let by, in whatever order they
+// come, rather than pulling the device back to where it was a moment ago. Long after, the same level
+// is the app's again.
+func TestLibrespotsEchoIsNotTakenBack(t *testing.T) {
+	f := newFakeSpotify(10)
+	f.s.session(true)
+	f.later(5 * time.Second)
+	f.press(11)
+	f.press(12)
+	f.s.heard(spotifyValue(12), false)
+	f.s.heard(spotifyValue(11), false)
+	if len(f.sets) != 0 || f.step != 12 {
+		t.Fatalf("the device went to %v and is at %d", f.sets, f.step)
+	}
+	f.later(echoWait + time.Second)
+	f.s.heard(spotifyValue(11), false)
+	if !slices.Equal(f.sets, []int{11}) {
+		t.Errorf("the app's level, long after: set %v, want [11]", f.sets)
+	}
+}
+
+// In quiet hours the app's slider raises the device no further than the night volume, and is put back
+// where the device stopped; a lower level is taken as it is.
+func TestNightVolumeStopsTheAppsRaise(t *testing.T) {
+	f := newFakeSpotify(5)
+	f.night = 8
+	f.s.session(true)
+	f.later(5 * time.Second)
+	f.told = nil
+	f.s.heard(spotifyValue(25), false)
+	if !slices.Equal(f.sets, []int{8}) || !slices.Equal(f.told, values(8)) {
+		t.Fatalf("set %v and told %v, want [8] and the slider back at 8", f.sets, f.told)
+	}
+	f.s.heard(spotifyValue(8), false) // the slider put back, coming back
+	f.s.heard(spotifyValue(30), false)
+	if !slices.Equal(f.sets, []int{8}) || !slices.Equal(f.told, values(8, 8)) {
+		t.Fatalf("at the night volume already: set %v and told %v", f.sets, f.told)
+	}
+	f.s.heard(spotifyValue(3), false)
+	if !slices.Equal(f.sets, []int{8, 3}) {
+		t.Errorf("down: set %v", f.sets)
+	}
+}
+
+// A level that librespot did not take is not counted as handed to it: the next change hands it again.
+func TestALevelLibrespotDidNotTakeIsHandedAgain(t *testing.T) {
+	f := newFakeSpotify(8)
+	f.takes = false
+	f.s.session(true)
+	f.press(12)
+	f.takes = true
+	f.press(12)
+	if !slices.Equal(f.told, values(12)) {
+		t.Errorf("told librespot %v, want the 12 once it took it", f.told)
+	}
+	// And a level the app sent that matches one never taken is the app's.
+	f.later(5 * time.Second)
+	f.s.heard(spotifyValue(8), false)
+	if !slices.Equal(f.sets, []int{8}) {
+		t.Errorf("set %v, want [8]", f.sets)
+	}
+}
+
+// The event lines say when a phone connects and goes.
+func TestSpotifySessions(t *testing.T) {
+	var got []bool
+	followSpotifyEvents(strings.NewReader("session_connected\t\t\t\t\t\nstopped\t\t\t\t\t\nsession_disconnected\t\t\t\t\t\n"), spotifyEvents{
+		track:   func(string, string, string, string) {},
+		session: func(c bool) { got = append(got, c) },
+		now:     time.Now,
+	})
+	if !slices.Equal(got, []bool{true, false}) {
+		t.Errorf("sessions %v", got)
+	}
+}
+
+// Handing librespot a level never waits: with no pipe, with nobody reading it, or with it full, the
+// level is dropped. One read is a line.
+func TestHandingLibrespotALevelNeverWaits(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "volume")
+	if writeSpotifyVolume(path, 100) {
+		t.Error("handed a level to a pipe that is not there")
+	}
+	if err := syscall.Mkfifo(path, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		if writeSpotifyVolume(path, 100) {
+			t.Error("handed a level with nobody reading")
+		}
+		r, err := os.OpenFile(path, os.O_RDWR, 0)
+		if err != nil {
+			t.Error(err)
+			return
+		}
+		defer r.Close()
+		if !writeSpotifyVolume(path, 32768) {
+			t.Error("a level was not taken")
+		}
+		b := make([]byte, 64)
+		if n, _ := r.Read(b); string(b[:n]) != "32768\n" {
+			t.Errorf("read %q", b[:n])
+		}
+		for range 1 << 20 { // far more than a pipe holds
+			if !writeSpotifyVolume(path, 65535) {
+				return
+			}
+		}
+		t.Error("a full pipe took every level")
+	}()
+	select {
+	case <-done:
+	case <-time.After(10 * time.Second):
+		t.Fatal("handing a level waited")
+	}
+}
+
+// Only a librespot that says it takes a volume pipe is given one.
+func TestOnlyALibrespotThatTakesVolumesIsGivenThem(t *testing.T) {
+	was := librespotPath
+	t.Cleanup(func() { librespotPath = was })
+	dir := t.TempDir()
+	for name, help := range map[string]bool{"  --volume-fifo PATH  Read volumes": true, "  --onevent PROGRAM": false} {
+		librespotPath = filepath.Join(dir, fmt.Sprint(help))
+		if err := os.WriteFile(librespotPath, []byte("#!/bin/sh\necho '"+name+"'\n"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if got := librespotTakesVolume(); got != help {
+			t.Errorf("%q: takes volumes %v", name, got)
+		}
+	}
+	librespotPath = filepath.Join(dir, "missing")
+	if librespotTakesVolume() {
+		t.Error("a missing librespot takes volumes")
 	}
 }
 

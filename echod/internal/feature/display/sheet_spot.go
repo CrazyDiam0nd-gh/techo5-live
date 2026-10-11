@@ -11,9 +11,6 @@ import (
 	"time"
 
 	"golang.org/x/image/font"
-	"golang.org/x/image/font/gofont/gobold"
-	"golang.org/x/image/font/gofont/goregular"
-	"golang.org/x/image/font/opentype"
 
 	"github.com/HuskerMinion/techo5/echod/internal/config"
 	"github.com/HuskerMinion/techo5/echod/internal/feature/alarm"
@@ -208,19 +205,31 @@ func init() {
 	categoryBlurbs[catSecurity] = "Remote access and security"
 }
 
-// spotFaces are the settings screen's text sizes on the round panel, a size down from the Show's.
-var spotFaces = sync.OnceValue(func() *sheetFaces {
-	bold, _ := opentype.Parse(gobold.TTF)
-	regular, _ := opentype.Parse(goregular.TTF)
-	f := func(fn *opentype.Font, size float64) font.Face {
-		fc, _ := opentype.NewFace(fn, &opentype.FaceOptions{Size: size, DPI: 72, Hinting: font.HintingFull})
+// spotFaceCache is spotFaces' faces, per font.
+var spotFaceCache struct {
+	mu    sync.Mutex
+	faces map[fontKey]*sheetFaces
+}
+
+// spotFaces are the settings screen's text sizes on the round panel, a size down from the Show's, in
+// the font k names; made once per font.
+func spotFaces(k fontKey) *sheetFaces {
+	spotFaceCache.mu.Lock()
+	defer spotFaceCache.mu.Unlock()
+	if fc, ok := spotFaceCache.faces[k]; ok {
 		return fc
 	}
-	return &sheetFaces{
-		header: f(bold, 30), label: f(regular, 24), labelBold: f(bold, 24), sub: f(regular, 16),
-		value: f(regular, 20), nav: f(regular, 20), navBold: f(bold, 20), button: f(bold, 19),
+	f := func(bold bool, size float64) font.Face { return fontFace(k.name, bold, size) }
+	fc := &sheetFaces{
+		header: f(true, 30), label: f(false, 24), labelBold: f(true, 24), sub: f(false, 16),
+		value: f(false, 20), nav: f(false, 20), navBold: f(true, 20), button: f(true, 19),
 	}
-})
+	if spotFaceCache.faces == nil || len(spotFaceCache.faces) >= keptFonts {
+		spotFaceCache.faces = map[fontKey]*sheetFaces{}
+	}
+	spotFaceCache.faces[k] = fc
+	return fc
+}
 
 // The round card's frame: rows between spotListTop and spotListBottom, their labels and controls
 // between spotCardLeft and spotCardRight (where the circle is wide enough for both), and its
@@ -379,7 +388,7 @@ func (r *roundRenderer) roundList(p pickerView, scroll int) int {
 			r.roundFill(b, 16, surface(5), surface(4))
 		}
 		r.paint.text(fc.value, r.fit(fc.value, o, b.Dx()-60), b.Min.X+20, b.Min.Y+b.Dy()/2+7, fg)
-		r.addZone(zone{r: image.Rect(left, y0, right, y0+optH).Intersect(list), kind: zoneOption, opt: i})
+		r.addZone(zone{r: image.Rect(left, y0, right, y0+optH).Intersect(list), kind: zoneOption, opt: i, label: p.title})
 	}
 	if maxScroll > 0 {
 		r.restore(under, image.Rect(list.Min.X, 0, list.Max.X, list.Min.Y))
@@ -398,6 +407,7 @@ func (d *Display) sheetGesture(g touch.Gesture) {
 	d.mu.Lock()
 	d.sheetAt = time.Now()
 	d.mu.Unlock()
+	stillHere()
 	switch g.Kind {
 	case touch.Hold:
 		d.mu.Lock()
@@ -443,9 +453,9 @@ func (d *Display) sheetGesture(g touch.Gesture) {
 			id := d.picker
 			d.picker = ""
 			d.mu.Unlock()
-			gate(id, d.sheetUp, func() { d.choose(id, z.opt) })
+			d.tapOption(id, z.label, z.opt)
 		case zoneRow:
-			gate(z.id, d.sheetUp, func() { d.rowTap(z.id, z.part, z.opt) })
+			d.tapRow(z)
 		}
 	}
 	d.wake()
