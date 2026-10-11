@@ -38,6 +38,10 @@ const (
 	// quiet voice (coral peaks near a third of alloy) has soft words and endings under 250, and they were thrown away
 	// as pauses, which cut short replies to a half. The model's own silence is far below this.
 	voicedRMS = 40
+	// A reply's soft ending (a fading word, a breath) sits under that, but it is still the reply. For tailMs after the
+	// last loud piece, anything above tailRMS counts as the voice too; past that a quiet floor is a pause.
+	tailRMS = 12
+	tailMs  = 400
 	// endSilence ends a reply; workSilence does the same while the backend is still thinking or running
 	// a tool; talkedOverAfter is how long after the model began to speak the person's words must begin
 	// to count as talking over it.
@@ -74,6 +78,7 @@ type liveBackend struct {
 	thinkingPosted bool            // the conversation has been told the request is with the backend
 	sentMs         int             // how much microphone audio the session has been sent: the same clock
 	replyInMs      int             // sentMs when the model began to answer; -1 before
+	sinceLoudMs    int             // how long since a loud piece of the model's voice, for its soft ending
 	quietMax       float64         // the loudest piece of the model's voice judged a pause, for the log
 	gotMs, fwdMs   int             // the model's voice received and passed on in this reply, in ms, for the log
 	saidEndMs      int             // where the model's own clock puts the end of its last word
@@ -460,10 +465,16 @@ func (b *liveBackend) onHeard(e live.Event) {
 // onVoice takes a tenth of a second or so of the model's voice, at 24 kHz.
 func (b *liveBackend) onVoice(samples []int16) {
 	level := live.RMS(samples)
-	voiced := level > voicedRMS // judged before any boost: the level it was spoken at
+	loud := level > voicedRMS // judged before any boost: the level it was spoken at
 	samples = live.Boost(samples, config.Get().Brain.LiveBoost)
 	ms := len(samples) * 1000 / live.SampleRate
 	b.mu.Lock()
+	voiced := loud || (b.speaking && level > tailRMS && b.sinceLoudMs < tailMs)
+	if loud {
+		b.sinceLoudMs = 0
+	} else {
+		b.sinceLoudMs += ms
+	}
 	b.gotMs += ms
 	if !voiced {
 		b.quietMax = max(b.quietMax, level)
@@ -480,7 +491,7 @@ func (b *liveBackend) onVoice(samples []int16) {
 			b.mu.Unlock()
 			return
 		}
-		b.speaking, b.silentMs, b.held = true, 0, nil
+		b.speaking, b.silentMs, b.held, b.sinceLoudMs = true, 0, nil, 0
 		b.res.Reset()
 		b.spoke = time.Now()
 	}

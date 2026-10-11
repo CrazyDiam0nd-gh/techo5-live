@@ -948,3 +948,48 @@ func TestLiveAQuietVoiceIsNotCutShort(t *testing.T) {
 		t.Errorf("%d samples of a %d-sample quiet reply were passed on", len(all), want)
 	}
 }
+
+// The soft ending of a reply, a fading word or a breath, is part of it, but only for a moment: a quiet floor
+// after that is a pause, and the reply ends.
+func TestLiveTheSoftEndOfAReplyIsKeptButNotAQuietFloor(t *testing.T) {
+	tone := func(amp float64) map[string]any {
+		n := live.SampleRate / 10
+		s := make([]int16, n)
+		for i := range s {
+			s[i] = int16(amp * math.Sin(2*math.Pi*300*float64(i)/live.SampleRate))
+		}
+		return map[string]any{"type": "session.output_audio.delta", "delta": base64.StdEncoding.EncodeToString(live.Bytes(s))}
+	}
+	passed := func(floor bool) int {
+		b, events, f := liveSetup(t, nil)
+		defer b.shutdown()
+		f.heard(" Hello", 400)
+		for range 4 {
+			f.send(chunk(true)) // loud
+		}
+		for range 3 {
+			f.send(tone(30)) // the fading end: RMS about 21
+		}
+		for range 14 {
+			if floor {
+				f.send(tone(30)) // and then a floor of the same level that never stops
+			} else {
+				f.send(chunk(false))
+			}
+		}
+		got := waitFor(t, events, evStreamEnd)
+		var all []int16
+		for _, e := range got {
+			if e.kind == evStreamAudio {
+				all = append(all, live.PCM16(e.audio)...)
+			}
+		}
+		return len(all) * 10 / speaker.VoiceRate // tenths of a second
+	}
+	if got := passed(false); got < 7 { // four loud tenths and the three soft ones
+		t.Errorf("the soft end was cut: %d tenths passed on, want 7", got)
+	}
+	if got := passed(true); got > 9 { // four loud, then at most the tail's four tenths
+		t.Errorf("a quiet floor went on being the voice: %d tenths passed on", got)
+	}
+}
