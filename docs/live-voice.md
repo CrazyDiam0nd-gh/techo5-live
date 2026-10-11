@@ -46,6 +46,9 @@ Settings, keys and Home Assistant access live in `/data` and are never touched.
 ```sh
 bash restore.sh <the device's address>
 ```
+On a Show, `SLOT=a` (or `b`) switches the boot slot back; `SLOT=image` installs the stock image that `install.sh` saved in `~/.techo5-live/` into the spare slot.
+
+The stock daemon does not know the settings that only this fork has, and it blanks them when it rewrites its settings. Note them before you go back, and set them again if you reinstall. For example, the wake word's light effect **Steady** goes back to None (in Home Assistant: the Dot's *Assistant 1 wake word effect*), and the ring stays dark until you choose it again. Your key, voice server and mode are kept.
 
 ## Build it yourself
 ```sh

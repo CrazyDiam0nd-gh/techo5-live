@@ -1,7 +1,7 @@
 > ## Live voice (unofficial add-on)
 > This copy of TECHO5 adds **Live voice**: interrupt the assistant mid-sentence, or talk over it in full duplex, on an Echo Dot or Echo Show 5, using your own OpenAI account. It is not part of TECHO5, is not affiliated with it, and is not supported by its maintainer. The rest of this page is TECHO5's own README.
 >
-> **Install** (a device already running TECHO5, with SSH as root):
+> **Install** (a device already running TECHO5 with SSH as root; to get there, follow [TECHO5's Getting Started](https://github.com/HuskerMinion/techo5/blob/main/docs/getting-started.md)):
 > 1. Download the file for your device and its `.sha256` from the [latest release](https://github.com/CrazyDiam0nd-gh/techo5-live/releases): `echod-dot-arm` or `echod-show-arm`.
 > 2. Download the files in the [installer folder](https://github.com/CrazyDiam0nd-gh/techo5-live/tree/realtime/tools/live-install) (all four, kept together) and run `bash install.sh <your device's address> <the file> <its .sha256 file>`.
 > 3. Reboot the device, open its setup page and choose *Live conversation* or *Live voice*, then enter your own OpenAI key.
