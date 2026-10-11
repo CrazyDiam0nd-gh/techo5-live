@@ -2,6 +2,7 @@
 # Install the live-conversation build of the TECHO5 daemon on a jailbroken Echo Dot or Echo Show 5.
 #
 #   bash install.sh <the device's address> [<binary>] [<its .sha256 file>]
+#   YES=1 bash install.sh ...      # skip the question (when there is no keyboard)
 #
 # Read README.md first. The script finds out which device it is talking to. With no binary named it
 # looks next to itself for echod-dot-arm or echod-show-arm (and a matching .sha256 file).
@@ -39,8 +40,9 @@ fi
 file "$BIN" 2>/dev/null | grep -q "ARM" || echo "WARNING: $BIN does not look like a 32-bit ARM program"
 
 echo "Currently:"; "${SSH[@]}" 'slotctl status 2>/dev/null || /usr/local/sbin/slotctl status'
-read -r -p "Install $BIN on this $KIND? [y/N] " yes
-[ "$yes" = y ] || { echo "nothing changed"; exit 0; }
+yes=${YES:-}
+[ "$yes" = 1 ] || { read -r -p "Install $BIN on this $KIND? [y/N] " yes || yes=n; [ "$yes" = y ] && yes=1; }
+[ "$yes" = 1 ] || { echo "nothing changed (answer y at the prompt, or run with YES=1)"; exit 0; }
 
 copy_checked() { # local file, remote path
 	"${SSH[@]}" "cat > $2" < "$1"
