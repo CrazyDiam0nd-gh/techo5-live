@@ -205,10 +205,17 @@ func instructions(b config.Brain, now time.Time) string {
 		s.WriteString("never make up or guess dates, times, opponents, scores or facts. If a page does not have it, ")
 		s.WriteString("read another result; if none do, say you couldn't find it. A time from a page is said with ")
 		s.WriteString("the time zone the page gives it in, like three o'clock Central. ")
-	} else {
+	} else if !b.BridgeReady() {
 		s.WriteString("Beyond the tools you cannot look anything up: no internet, no news, no sports schedules or ")
 		s.WriteString("scores, and nothing that happened after your training. Never make up dates, times, scores or ")
 		s.WriteString("facts about current events; say you can't look that up. General knowledge you are sure of is fine. ")
+	}
+	if b.BridgeReady() {
+		s.WriteString("For anything else you cannot do with your tools or are not sure of - arithmetic, unit and ")
+		s.WriteString("currency conversions, dates, the time or weather in another place, facts about the world, ")
+		s.WriteString("anything that needs looking up - use ask_bridge with the person's own words, and answer from ")
+		s.WriteString("what it says: never make up or guess facts, dates, times or scores. It can take 10 to 30 ")
+		s.WriteString("seconds, so say Working. before you call it. If it reports an error, say you couldn't find out. ")
 	}
 	s.WriteString("What you hear comes from speech recognition. Only when the words truly make no sense, ask the ")
 	s.WriteString("person to say it again; otherwise answer the likeliest meaning.")
