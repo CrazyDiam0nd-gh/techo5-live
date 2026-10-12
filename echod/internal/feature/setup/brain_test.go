@@ -254,11 +254,11 @@ func fieldShown(t *testing.T, page, id string) bool {
 func TestEachWayOfAnsweringShowsOnlyItsOwnFields(t *testing.T) {
 	shown := map[string]map[string]bool{ // mode -> the fields shown
 		"":         {},
-		"direct":   {"stt": true, "tts": true, "voice": true, "language": true, "llm": true, "model": true, "key": true, "search": true, "prompt": true},
-		"realtime": {"tts": true, "voice": true, "language": true, "model": true, "key": true, "search": true, "prompt": true},
-		"live":     {"livevoice": true, "livemodel": true, "livebackend": true, "key": true, "search": true, "prompt": true},
+		"direct":   {"stt": true, "tts": true, "voice": true, "language": true, "llm": true, "model": true, "key": true, "search": true, "bridge": true, "bridgekey": true, "prompt": true},
+		"realtime": {"tts": true, "voice": true, "language": true, "model": true, "key": true, "search": true, "bridge": true, "bridgekey": true, "prompt": true},
+		"live":     {"livevoice": true, "livemodel": true, "livebackend": true, "key": true, "search": true, "bridge": true, "bridgekey": true, "prompt": true},
 	}
-	every := []string{"stt", "tts", "voice", "language", "llm", "model", "key", "search", "prompt", "livevoice", "livemodel", "livebackend"}
+	every := []string{"stt", "tts", "voice", "language", "llm", "model", "key", "search", "bridge", "bridgekey", "prompt", "livevoice", "livemodel", "livebackend"}
 	for mode, want := range shown {
 		freshConfig(t)
 		_ = config.Set().Brain().Set(config.Brain{Mode: config.BrainMode(mode)})

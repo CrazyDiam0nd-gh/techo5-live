@@ -66,7 +66,11 @@ func brainSection(w http.ResponseWriter, token string) {
 	if b.Key != "" {
 		haveKey = "1"
 	}
-	fmt.Fprintf(w, `<fieldset><legend>Voice assistant</legend><form id="brainform" method="post" action="/setup/save" data-havekey="%s">`, haveKey)
+	haveBridgeKey := "0"
+	if b.BridgeKey != "" {
+		haveBridgeKey = "1"
+	}
+	fmt.Fprintf(w, `<fieldset><legend>Voice assistant</legend><form id="brainform" method="post" action="/setup/save" data-havekey="%s" data-havebridgekey="%s">`, haveKey, haveBridgeKey)
 	hidden(w, token, "brain", "sound")
 	fmt.Fprintf(w, `<label for="mode">Answered by</label>
 	 <select id="mode" name="mode">
@@ -154,6 +158,16 @@ func brainSection(w http.ResponseWriter, token string) {
 	 <p class="note">To look up what the model cannot know: games, news, opening hours. SearXNG needs its JSON
 	  format turned on (search.formats in its settings.yml). Empty: no looking things up.</p></div>`,
 		part("div", "direct realtime live", ""), html.EscapeString(b.Search))
+	fmt.Fprintf(w, `%s<label for="bridge">Bridge (a service that answers what the assistant cannot)</label>
+	 <input id="bridge" name="bridge" value="%s" placeholder="http://192.168.1.20:8765" autocomplete="off">
+	 <label for="bridgekey">Bridge key</label>
+	 <input id="bridgekey" name="bridge_key" type="password" value="" placeholder="%s" autocomplete="off">
+	 <p><label><input type="checkbox" name="nobridgekey" value="yes" style="width:auto"> Remove the bridge key</label></p>
+	 <p class="note">Something on your network to ask for what the assistant cannot do or look up itself: sums,
+	  conversions, the time somewhere else, questions for an AI agent. The assistant asks it only when its own
+	  tools fall short, and says Working. first when it may take a while. It needs the bridge's address and the
+	  key you set for it. Empty: the assistant does not use one.</p></div>`,
+		part("div", "direct realtime live", ""), html.EscapeString(b.Bridge), keyHint(b.BridgeKey != ""))
 	fmt.Fprintf(w, `%s<label for="prompt">Anything the assistant should know</label>
 	 <textarea id="prompt" name="prompt" rows="3" maxlength="2000">%s</textarea></div>`,
 		part("div", "direct realtime live", ""), html.EscapeString(b.Prompt))
@@ -172,10 +186,13 @@ func brainSection(w http.ResponseWriter, token string) {
 	   var m=sel.value,v=function(n){var e=document.getElementById(n);return e?e.value.trim():'';};
 	   var removing=form.querySelector('[name=nokey]');removing=removing&&removing.checked;
 	   var key=v('key')!==''||(form.getAttribute('data-havekey')==='1'&&!removing),msg='';
+	   var removingBridge=form.querySelector('[name=nobridgekey]');removingBridge=removingBridge&&removingBridge.checked;
+	   var bridgeKey=v('bridgekey')!==''||(form.getAttribute('data-havebridgekey')==='1'&&!removingBridge);
 	   if(m==='realtime'&&!v('tts')){msg='Live conversation needs a text-to-speech server: fill in Text to speech (host:port), like 192.168.1.20:10200.';}
 	   else if(m==='realtime'&&!key){msg='Live conversation needs your OpenAI key.';}
 	   else if(m==='live'&&!key){msg='Live voice needs your OpenAI key.';}
 	   else if(m==='direct'&&(!v('stt')||!v('tts')||!v('llm'))){msg='Answering directly needs all three: speech to text, text to speech and the chat model endpoint.';}
+	   else if(m!==''&&v('bridge')!==''&&!bridgeKey){msg='The bridge needs its key: fill in Bridge key.';}
 	   if(msg){ev.preventDefault();why.textContent=msg;why.hidden=false;why.scrollIntoView({block:'center'});}});})();</script></fieldset>`)
 }
 
@@ -319,6 +336,7 @@ func saveBrain(r *http.Request) string {
 		LLM:      strings.TrimRight(v("llm"), "/"),
 		Model:    v("model"),
 		Search:   strings.TrimRight(v("search"), "/"),
+		Bridge:   strings.TrimRight(v("bridge"), "/"),
 		Prompt:   strings.TrimSpace(r.PostFormValue("prompt")),
 
 		LiveVoice:    v("live_voice"),
@@ -351,6 +369,21 @@ func saveBrain(r *http.Request) string {
 		if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
 			return "the search server should be an address like http://192.168.1.20:8888"
 		}
+	}
+	if b.Bridge != "" {
+		u, err := url.Parse(b.Bridge)
+		if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
+			return "the bridge should be an address like http://192.168.1.20:8765"
+		}
+		// Without its key the bridge refuses every question, so an address alone could never work.
+		haveBridgeKey := strings.TrimSpace(r.PostFormValue("bridge_key")) != "" ||
+			(config.Get().Brain.BridgeKey != "" && r.PostFormValue("nobridgekey") != "yes")
+		if !haveBridgeKey {
+			return "the bridge needs its key: fill in Bridge key"
+		}
+	}
+	if k := strings.TrimSpace(r.PostFormValue("bridge_key")); strings.ContainsAny(k, "\r\n") {
+		return "a bridge key is one line"
 	}
 	if b.Mode == config.BrainDirect && (b.STT == "" || b.TTS == "" || b.LLM == "") {
 		return "answering directly needs all three: speech to text, text to speech and the chat model"
@@ -389,6 +422,16 @@ func saveBrain(r *http.Request) string {
 			return "could not save the key: " + err.Error()
 		}
 	}
-	slog.Info("setup page: the voice assistant was set", "mode", b.Mode, "stt", b.STT, "tts", b.TTS, "llm", b.LLM)
+	switch bridgeKey := strings.TrimSpace(r.PostFormValue("bridge_key")); {
+	case r.PostFormValue("nobridgekey") == "yes":
+		if err := config.Set().Brain().SetBridgeKey(""); err != nil {
+			return "could not remove the bridge key: " + err.Error()
+		}
+	case bridgeKey != "":
+		if err := config.Set().Brain().SetBridgeKey(bridgeKey); err != nil {
+			return "could not save the bridge key: " + err.Error()
+		}
+	}
+	slog.Info("setup page: the voice assistant was set", "mode", b.Mode, "stt", b.STT, "tts", b.TTS, "llm", b.LLM, "bridge", b.Bridge)
 	return ""
 }

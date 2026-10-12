@@ -58,6 +58,21 @@ GOOS=linux GOARCH=arm GOARM=7 CGO_ENABLED=0 go build          -o echod-show-arm 
 ```
 Tests: `go test ./...`, and again with `-tags dot` and `-tags spot`.
 
+## Ask a bridge (optional)
+Setup page > Sound & Voice > Voice assistant > **Bridge** (address) and **Bridge key**. A *bridge* is a small service on your
+own network that answers what the assistant cannot do or look up itself. When both are filled in, the model gets one more
+tool, `ask_bridge`: it passes the person's own words, and the bridge answers with a short sentence to say. The model is
+told to use it for anything its other tools do not cover (arithmetic, unit and currency conversions, dates, the time or weather in
+another place, facts that need looking up) and to say *Working.* first, because an answer that needs an AI agent can take 10 to 30 seconds.
+Empty: no such tool, and the model's instructions are exactly as before.
+
+What the device sends is what Home Assistant's Assist sends a conversation agent: a `POST` of JSON to `<address>/api/chat` with
+`Authorization: Bearer <key>`, for example `{"text": "what time is it in Tokyo", "language": "en", "conversation_id": "techo5-live",
+"satellite_id": "techo5-live"}`; it reads the `reply` string from the JSON that comes back. Any service that does that works.
+Errors come back to the model in plain words (the bridge did not answer, refused the key, could not reach its agent), so it can say so.
+The address is checked when you save it, and an address without a key is refused (the bridge would refuse every question).
+The key is stored on the device like the OpenAI key, is never shown again once saved, and has its own *Remove the bridge key* box.
+
 ## Other changes in this fork
 Sounds of your own uploaded from the setup page, the Dot's clock following the saved time zone, saving a setup form keeps
 your scroll position, a WebRTC echo canceller that restarts after a stall.
