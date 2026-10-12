@@ -101,10 +101,10 @@ func TestAskBridgeSaysWhatWentWrong(t *testing.T) {
 			w.WriteHeader(401)
 			_, _ = w.Write([]byte("Unauthorized"))
 		}, "refused the key"},
-		{"hermes not answering", func(w http.ResponseWriter, r *http.Request) {
+		{"its agent not answering", func(w http.ResponseWriter, r *http.Request) {
 			w.WriteHeader(502)
-			_, _ = w.Write([]byte("Hermes API is unavailable"))
-		}, "Hermes"},
+			_, _ = w.Write([]byte("the agent is unavailable"))
+		}, "its agent"},
 		{"a server error", func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(500) }, "500"},
 		{"not json", func(w http.ResponseWriter, r *http.Request) { _, _ = w.Write([]byte("<html>")) }, "not understand"},
 		{"no reply", func(w http.ResponseWriter, r *http.Request) {

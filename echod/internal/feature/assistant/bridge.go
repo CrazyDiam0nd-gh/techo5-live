@@ -90,7 +90,7 @@ func askBridge(question string) (string, error) {
 	case http.StatusUnauthorized, http.StatusForbidden:
 		return "", errors.New("the bridge refused the key")
 	case http.StatusBadGateway, http.StatusServiceUnavailable, http.StatusGatewayTimeout:
-		return "", errors.New("the bridge could not reach Hermes, the agent behind it")
+		return "", errors.New("the bridge could not reach its agent")
 	default:
 		return "", fmt.Errorf("the bridge answered %s", resp.Status)
 	}
@@ -105,7 +105,8 @@ func askBridge(question string) (string, error) {
 		return "", errors.New("the bridge had no reply")
 	}
 	if len(reply) > bridgeReplyMax {
-		reply = reply[:bridgeReplyMax]
+		// Not in the middle of a multi-byte character.
+		reply = strings.ToValidUTF8(reply[:bridgeReplyMax], "")
 	}
 	return reply, nil
 }

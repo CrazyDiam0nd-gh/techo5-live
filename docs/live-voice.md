@@ -73,6 +73,12 @@ Errors come back to the model in plain words (the bridge did not answer, refused
 The address is checked when you save it, and an address without a key is refused (the bridge would refuse every question).
 The key is stored on the device like the OpenAI key, is never shown again once saved, and has its own *Remove the bridge key* box.
 
+**Please know:**
+- The address is plain HTTP unless you give an `https://` one. The key and the spoken words then cross the network unencrypted. That is
+  fine on a home network; for a bridge that is not on your LAN, use HTTPS (or a TLS proxy in front of it).
+- What was said leaves the house. If the bridge passes questions to an agent with internet access, your words go with them. Know what
+  your bridge does with a question before you fill in the two fields.
+
 ## Other changes in this fork
 Sounds of your own uploaded from the setup page, the Dot's clock following the saved time zone, saving a setup form keeps
 your scroll position, a WebRTC echo canceller that restarts after a stall.
