@@ -1,8 +1,10 @@
 package wifi
 
 import (
+	"context"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -66,9 +68,11 @@ func TestAnAddressIsReadAsTypedAndRefusedWhenItCouldNotWork(t *testing.T) {
 // The candidate reads back as it was written, with the network it was set on.
 func TestAChangeIsACandidateUntilItHasWorked(t *testing.T) {
 	dir := t.TempDir()
-	prev := addressFile
-	addressFile = filepath.Join(dir, "network.conf")
-	t.Cleanup(func() { addressFile = prev })
+	prev, prevSession, prevAddr := addressFile, sessionFile, currentAddress
+	addressFile, sessionFile = filepath.Join(dir, "network.conf"), filepath.Join(dir, "network-dhcp-session")
+	currentAddress = func() string { return "192.168.1.50" }
+	t.Cleanup(func() { addressFile, sessionFile, currentAddress = prev, prevSession, prevAddr })
+	ctx := context.Background()
 
 	if a := LoadAddress(); a.Fixed {
 		t.Fatalf("no file read as %s", a)
@@ -92,7 +96,7 @@ func TestAChangeIsACandidateUntilItHasWorked(t *testing.T) {
 	if got := LoadAddress(); got.Fixed {
 		t.Errorf("the untried candidate is in use: %s", got)
 	}
-	if got := readAddress(candidate()); !got.same(a) {
+	if got, ssid := readAddress(candidate()); !got.same(a) || ssid != "486f6d65" {
 		t.Errorf("the candidate reads back as %s (%s), want %s (%s)", got, got.DNSList(), a, a.DNSList())
 	}
 
@@ -100,18 +104,32 @@ func TestAChangeIsACandidateUntilItHasWorked(t *testing.T) {
 	if err := os.Rename(candidate(), addressFile); err != nil {
 		t.Fatal(err)
 	}
-	if !AddressUnchanged(a) {
+	if !AddressUnchanged(ctx, a) {
 		t.Error("the setting in use reads as a change")
 	}
-	if AddressUnchanged(Address{}) {
+	if AddressUnchanged(ctx, Address{}) {
 		t.Error("DHCP reads as unchanged while a fixed address is in use")
 	}
+	// The same setting while DHCP stands in for it is tried again: that is the way back to it.
+	_ = os.WriteFile(sessionFile, []byte("the gateway 192.168.1.1 did not answer for five minutes"), 0o644)
+	if AddressUnchanged(ctx, a) {
+		t.Error("the setting in use reads as unchanged while DHCP stands in for it")
+	}
+	_ = os.Remove(sessionFile)
+	currentAddress = func() string { return "192.168.1.77" }
+	if AddressUnchanged(ctx, a) {
+		t.Error("the setting in use reads as unchanged while the interface is at another address")
+	}
+	currentAddress = func() string { return "192.168.1.50" }
 
 	// A file edited by hand into something that is not an address, or missing a value, is DHCP, as
 	// techo5-net reads it, not a guess.
 	for _, bad := range []string{
 		"MODE=static\nADDRESS=192.168.1.50\nPREFIX=24\nGATEWAY=elsewhere\n",
-		"MODE=static\nADDRESS=192.168.1.50\nGATEWAY=192.168.1.1\n", // no prefix
+		"MODE=static\nADDRESS=192.168.1.50\nGATEWAY=192.168.1.1\n",                       // no prefix
+		"MODE=static\nADDRESS=192.168.001.050\nPREFIX=24\nGATEWAY=192.168.1.1\n",         // leading zeros
+		"MODE=static\nADDRESS=192.168.1.50\nPREFIX=024\nGATEWAY=192.168.1.1\n",           // in the prefix too
+		"MODE=static\nADDRESS=192.168.1.50\nPREFIX=24\nGATEWAY=192.168.1.1\nSSID=Home\n", // a name not in hex
 	} {
 		_ = os.WriteFile(addressFile, []byte(bad), 0o644)
 		if got := LoadAddress(); got.Fixed {
@@ -120,7 +138,7 @@ func TestAChangeIsACandidateUntilItHasWorked(t *testing.T) {
 	}
 	// DHCP in use and DHCP asked for: nothing to try, so the device does not drop its lease for nothing.
 	_ = os.WriteFile(addressFile, []byte("MODE=dhcp\n"), 0o644)
-	if !AddressUnchanged(Address{}) {
+	if !AddressUnchanged(ctx, Address{}) {
 		t.Error("DHCP asked for while on DHCP reads as a change")
 	}
 }
@@ -137,5 +155,29 @@ func TestTheFallbackSaysWhy(t *testing.T) {
 	_ = os.WriteFile(fallbackFile, []byte("the gateway 192.168.1.1 did not answer from 192.168.1.50/24\n"), 0o644)
 	if got := AddressFallback(); got != "the gateway 192.168.1.1 did not answer from 192.168.1.50/24" {
 		t.Errorf("says %q", got)
+	}
+}
+
+// The candidate names the network and the address: root's alone, not anyone's to read.
+func TestTheCandidateIsRootsAlone(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("no Unix file modes")
+	}
+	dir := t.TempDir()
+	prev := addressFile
+	addressFile = filepath.Join(dir, "network.conf")
+	t.Cleanup(func() { addressFile = prev })
+	// A temporary file left with a looser mode must not lend it to the new one.
+	_ = os.WriteFile(candidate()+".tmp", nil, 0o644)
+	a, _ := ParseAddress("192.168.1.50", "192.168.1.1", "")
+	if err := writeCandidate(a, ""); err != nil {
+		t.Fatal(err)
+	}
+	st, err := os.Stat(candidate())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if m := st.Mode().Perm(); m != 0o600 {
+		t.Errorf("the candidate is %o, want 600", m)
 	}
 }

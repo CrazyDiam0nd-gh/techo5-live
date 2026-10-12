@@ -59,13 +59,36 @@ type ownEntry struct {
 	font *sfnt.Font
 }
 
+func (e ownEntry) sig() fileSig { return fileSig{e.file, e.size, e.mod} }
+
+// fileSig is a font file in the folder as a look at it finds it: its name, size and time.
+type fileSig struct {
+	name string
+	size int64
+	mod  time.Time
+}
+
+func (a fileSig) same(b fileSig) bool {
+	return a.name == b.name && a.size == b.size && a.mod.Equal(b.mod)
+}
+
+// own is the fonts in use and the folder as last read. mu guards it and is only ever held for a
+// moment, since the drawing loop takes it to make its faces: opening and checking the files is done
+// outside it, one load at a time under loading, and only the result is swapped in under mu.
 var own struct {
 	mu      sync.Mutex
 	listed  []OwnFont
 	inUse   []ownEntry
-	mtime   time.Time // the folder's, when last read
-	checked time.Time // when the folder was last looked at
+	seen    []fileSig          // the folder's font files when last read
+	bad     map[string]fileSig // files that went wrong while drawing (markBad), as they were then
+	checked time.Time          // when the folder was last looked at
 }
+
+// loading is held through a load, so two never run at once.
+var loading sync.Mutex
+
+// cleaned is whether what uploads cut off by a power cut left behind has been cleared. Under loading.
+var cleaned bool
 
 // gen counts the changes to the fonts in use, so a screen can tell when to make its faces again.
 var gen atomic.Uint64
@@ -76,57 +99,63 @@ func Generation() uint64 { return gen.Load() }
 // refreshEvery is how often Refresh looks at the folder for a change made by hand.
 const refreshEvery = 10 * time.Second
 
-// Refresh reads the folder again if it has changed since it was last read (a file added or removed
-// over SSH), looking at most every refreshEvery. Cheap enough to call on every frame.
-func Refresh() {
+// Refresh reads the folder again if it has changed since it was last read (a file added, removed,
+// replaced, or still being copied in over SSH: each file's size and time are compared, not only the
+// folder's), looking at most every refreshEvery. Cheap enough to call on every frame, and never waits
+// for a load another goroutine is doing.
+func Refresh() { refresh(false) }
+
+// refresh is Refresh, waiting for a load under way when wait is set.
+func refresh(wait bool) {
 	own.mu.Lock()
-	defer own.mu.Unlock()
 	now := time.Now()
-	if !own.checked.IsZero() && now.Sub(own.checked) < refreshEvery {
+	due := own.listed == nil || now.Sub(own.checked) >= refreshEvery
+	if due {
+		own.checked = now
+	}
+	own.mu.Unlock()
+	if !due {
 		return
 	}
-	own.checked = now
-	var mtime time.Time
-	if st, err := os.Stat(Dir); err == nil {
-		mtime = st.ModTime()
+	if wait {
+		loading.Lock()
+	} else if !loading.TryLock() {
+		return // another load is under way, and swaps in what it finds
 	}
-	if !mtime.Equal(own.mtime) || own.listed == nil {
-		own.mtime = mtime
-		load()
+	defer loading.Unlock()
+	files := scan()
+	own.mu.Lock()
+	same := own.listed != nil && slices.EqualFunc(files, own.seen, fileSig.same)
+	own.mu.Unlock()
+	if !same {
+		load(files)
 	}
 }
 
-// Rescan reads the folder again now.
+// Rescan reads the folder again now, checking again any file that was not used.
 func Rescan() {
+	loading.Lock()
+	defer loading.Unlock()
 	own.mu.Lock()
-	defer own.mu.Unlock()
 	own.checked = time.Now()
-	if st, err := os.Stat(Dir); err == nil {
-		own.mtime = st.ModTime()
-	} else {
-		own.mtime = time.Time{}
-	}
-	load()
+	own.mu.Unlock()
+	load(scan())
 }
 
 // Own is the folder's font files, in the order they are tried, each with its name or what is wrong
 // with it.
 func Own() []OwnFont {
-	Refresh()
+	refresh(true)
 	own.mu.Lock()
 	defer own.mu.Unlock()
 	return slices.Clone(own.listed)
 }
 
 // ownFonts is the fonts in use, in order. Called under no lock.
-func ownFonts() []*sfnt.Font {
+func ownFonts() []ownEntry {
 	own.mu.Lock()
 	defer own.mu.Unlock()
-	out := make([]*sfnt.Font, len(own.inUse))
-	for i, e := range own.inUse {
-		out[i] = e.font
-	}
-	return out
+	return slices.Clone(own.inUse)
 }
 
 // fontFile is whether name is a font file by its name.
@@ -138,27 +167,57 @@ func fontFile(name string) bool {
 	return false
 }
 
-// load reads the folder: each font file in name order, opened and checked, within the limits. The
-// files of the fonts in use before are left to be closed when nothing draws with them any more (an
-// os.File closes itself once unreachable), since a face made a moment ago may still be drawing a
-// frame. Called under own.mu.
-func load() {
-	listed := []OwnFont{}
-	var inUse []ownEntry
+// uploadPrefix starts the name of a file the setup page is still receiving (AddOwn).
+const uploadPrefix = ".upload-"
+
+// scan is the folder's font files, in name order, as they are now. Called under loading.
+func scan() []fileSig {
 	entries, err := os.ReadDir(Dir)
 	if err != nil && !errors.Is(err, os.ErrNotExist) {
 		slog.Warn("fonts: the fonts folder could not be read", "dir", Dir, "err", err)
 	}
-	var total int64
+	if !cleaned {
+		// The first look since the daemon started: an upload a power cut stopped is left behind under
+		// its temporary name, up to MaxOwnFile of it. None can be under way yet (AddOwn looks first).
+		cleaned = true
+		removeUploads(entries)
+	}
+	var out []fileSig
 	for _, e := range entries {
 		if e.IsDir() || !fontFile(e.Name()) {
 			continue
 		}
-		o := OwnFont{File: e.Name()}
-		var mod time.Time
+		f := fileSig{name: e.Name()}
 		if info, err := e.Info(); err == nil {
-			o.Size, mod = info.Size(), info.ModTime()
+			f.size, f.mod = info.Size(), info.ModTime()
 		}
+		out = append(out, f)
+	}
+	return out
+}
+
+// removeUploads deletes the uploads' temporary files among entries, the folder's.
+func removeUploads(entries []os.DirEntry) {
+	for _, e := range entries {
+		if strings.HasPrefix(e.Name(), uploadPrefix) {
+			os.Remove(filepath.Join(Dir, e.Name()))
+		}
+	}
+}
+
+// load reads the folder's font files (files, from scan): each in name order, opened and checked,
+// within the limits. A file in use already and unchanged since (the same file, size and time) is kept
+// as it is rather than opened and checked again. The files of the fonts no longer in use are left to
+// be closed when nothing draws with them any more (an os.File closes itself once unreachable), since
+// a face made a moment ago may still be drawing a frame. Called under loading, not own.mu, which the
+// drawing loop waits on: only the result is swapped in under it.
+func load(files []fileSig) {
+	prev := ownFonts()
+	listed := []OwnFont{}
+	var inUse []ownEntry
+	var total int64
+	for _, sig := range files {
+		o := OwnFont{File: sig.name, Size: sig.size}
 		switch {
 		case len(inUse) >= MaxOwnFiles:
 			o.Problem = fmt.Sprintf("only the first %d fonts are used", MaxOwnFiles)
@@ -167,56 +226,148 @@ func load() {
 		case total+o.Size > MaxOwnTotal:
 			o.Problem = fmt.Sprintf("the fonts together would be over %d MB", MaxOwnTotal>>20)
 		default:
-			fh, f, err := openFont(filepath.Join(Dir, e.Name()))
+			path := filepath.Join(Dir, sig.name)
+			if i := slices.IndexFunc(prev, func(e ownEntry) bool { return e.sig().same(sig) && sameFile(path, e.fh) }); i >= 0 {
+				o.Name = safeFontName(prev[i].font)
+				total += o.Size
+				inUse = append(inUse, prev[i])
+				break
+			}
+			fh, f, name, err := openFont(path)
 			if err != nil {
 				o.Problem = err.Error()
 				break
 			}
-			o.Name = fontName(f)
+			o.Name = name
 			total += o.Size
-			inUse = append(inUse, ownEntry{file: e.Name(), size: o.Size, mod: mod, fh: fh, font: f})
+			inUse = append(inUse, ownEntry{file: sig.name, size: sig.size, mod: sig.mod, fh: fh, font: f})
 		}
 		if o.Problem != "" {
 			slog.Warn("fonts: a font of your own is not used", "file", o.File, "why", o.Problem)
 		}
 		listed = append(listed, o)
 	}
+
+	own.mu.Lock()
+	defer own.mu.Unlock()
+	listed, inUse = dropBad(listed, inUse)
 	changed := len(inUse) != len(own.inUse)
 	for i := 0; !changed && i < len(inUse); i++ {
-		a, b := inUse[i], own.inUse[i]
-		changed = changed || a.file != b.file || a.size != b.size || !a.mod.Equal(b.mod)
+		changed = inUse[i].font != own.inUse[i].font
 	}
-	if !changed {
-		// The same files, unchanged: keep the ones open already, and close the new copies.
-		for _, e := range inUse {
-			e.fh.Close()
-		}
-		inUse = own.inUse
-	}
-	own.listed, own.inUse = listed, inUse
+	own.listed, own.inUse, own.seen = listed, inUse, files
 	if changed {
 		gen.Add(1)
 		slog.Info("fonts: fonts of your own", "in use", len(inUse))
 	}
 }
 
-// openFont opens a font file and checks it is one the screen can draw from: it reads, has glyphs, and
-// a glyph's outline can be read. A collection (.ttc) is its first font. The file is kept open, as the
-// font reads from it.
-func openFont(path string) (*os.File, *sfnt.Font, error) {
+// sameFile is whether path is still the file fh has open, not another put in its place.
+func sameFile(path string, fh *os.File) bool {
+	a, err := os.Stat(path)
+	if err != nil {
+		return false
+	}
+	b, err := fh.Stat()
+	return err == nil && os.SameFile(a, b)
+}
+
+// brokeProblem is what the setup page says of a font that went wrong while drawing (markBad).
+const brokeProblem = "it went wrong while drawing, so it is not used; put it in again to try it again"
+
+// dropBad takes out of inUse the fonts that went wrong while drawing and have not changed since,
+// and says so in listed. A file gone from the folder is forgotten, so put back it is tried again.
+// Called under own.mu.
+func dropBad(listed []OwnFont, inUse []ownEntry) ([]OwnFont, []ownEntry) {
+	if len(own.bad) == 0 {
+		return listed, inUse
+	}
+	for file := range own.bad {
+		if !slices.ContainsFunc(listed, func(o OwnFont) bool { return o.File == file }) {
+			delete(own.bad, file)
+		}
+	}
+	inUse = slices.DeleteFunc(inUse, func(e ownEntry) bool {
+		b, ok := own.bad[e.file]
+		if ok && !b.same(e.sig()) {
+			delete(own.bad, e.file) // changed since: tried again
+			return false
+		}
+		return ok
+	})
+	for i := range listed {
+		if _, ok := own.bad[listed[i].File]; ok {
+			listed[i].Problem = brokeProblem
+		}
+	}
+	return listed, inUse
+}
+
+// markBad stops using the font of one's own f after it panicked while a character was drawn from it
+// (a file broken in a way the checks before use did not find), so it is not tried again on the next
+// frame, until its file is changed or put in again. The list is kept in memory only: after a restart the
+// font is tried again, and dropped again should it break again.
+func markBad(f *sfnt.Font, why string) {
+	own.mu.Lock()
+	defer own.mu.Unlock()
+	i := slices.IndexFunc(own.inUse, func(e ownEntry) bool { return e.font == f })
+	if i < 0 {
+		return // dropped already
+	}
+	e := own.inUse[i]
+	slog.Error("fonts: a font of your own went wrong while drawing; it is not used", "file", e.file, "err", why)
+	if own.bad == nil {
+		own.bad = map[string]fileSig{}
+	}
+	own.bad[e.file] = e.sig()
+	own.listed, own.inUse = dropBad(slices.Clone(own.listed), slices.Clone(own.inUse))
+	gen.Add(1)
+}
+
+// openFont opens a font file and checks it is one the screen can draw from (readFont), with the name
+// it gives itself. The file is kept open, as the font reads from it.
+func openFont(path string) (*os.File, *sfnt.Font, string, error) {
 	fh, err := os.Open(path)
 	if err != nil {
-		return nil, nil, errors.New("it could not be opened")
+		return nil, nil, "", errors.New("it could not be opened")
 	}
-	f, err := parseFont(fh)
+	f, name, err := readFont(fh)
+	if err != nil {
+		fh.Close()
+		return nil, nil, "", err
+	}
+	return fh, f, name, nil
+}
+
+// readFont reads a font and checks it is one the screen can draw from: it reads, has glyphs, and a
+// glyph's outline can be read. A collection (.ttc) is its first font. A file broken in a way that
+// makes the font reader panic is refused like any other, rather than taking the daemon down, and
+// again at every start, as the folder is read at each.
+func readFont(r io.ReaderAt) (f *sfnt.Font, name string, err error) {
+	defer func() {
+		if p := recover(); p != nil {
+			slog.Warn("fonts: reading a font panicked", "err", p)
+			f, name, err = nil, "", errors.New("it is not a font this device can read")
+		}
+	}()
+	f, err = parseFont(r)
 	if err == nil {
 		err = checkFont(f)
 	}
 	if err != nil {
-		fh.Close()
-		return nil, nil, err
+		return nil, "", err
 	}
-	return fh, f, nil
+	return f, fontName(f), nil
+}
+
+// safeFontName is fontName, "" should reading the name panic.
+func safeFontName(f *sfnt.Font) (name string) {
+	defer func() {
+		if recover() != nil {
+			name = ""
+		}
+	}()
+	return fontName(f)
 }
 
 func parseFont(r io.ReaderAt) (*sfnt.Font, error) {
@@ -275,8 +426,15 @@ func AddOwn(name string, r io.Reader) error {
 	if !safeName(name) {
 		return errors.New("use letters, numbers, spaces, dots, dashes and underscores in the file's name")
 	}
+	// One upload at a time: two at once would each pass the count and size checks below.
+	adding.Lock()
+	defer adding.Unlock()
 	if err := os.MkdirAll(Dir, 0o755); err != nil {
 		return errors.New("the fonts folder could not be made")
+	}
+	// What an upload cut off by a power cut left behind; none is under way while this one is.
+	if entries, err := os.ReadDir(Dir); err == nil {
+		removeUploads(entries)
 	}
 	var total int64
 	files := 0
@@ -289,7 +447,7 @@ func AddOwn(name string, r io.Reader) error {
 	if files >= MaxOwnFiles {
 		return fmt.Errorf("there are %d fonts already; remove one first", files)
 	}
-	tmp, err := os.CreateTemp(Dir, ".upload-*")
+	tmp, err := os.CreateTemp(Dir, uploadPrefix+"*")
 	if err != nil {
 		return errors.New("the font could not be saved")
 	}
@@ -307,10 +465,7 @@ func AddOwn(name string, r io.Reader) error {
 		tmp.Close()
 		return fmt.Errorf("the fonts together can be at most %d MB; remove one first", MaxOwnTotal>>20)
 	}
-	f, err := parseFont(tmp)
-	if err == nil {
-		err = checkFont(f)
-	}
+	_, _, err = readFont(tmp)
 	if cerr := tmp.Close(); err == nil && cerr != nil {
 		err = errors.New("the font could not be saved")
 	}
@@ -337,6 +492,9 @@ func RemoveOwn(file string) error {
 	Rescan()
 	return nil
 }
+
+// adding is held through an upload (AddOwn).
+var adding sync.Mutex
 
 // safeName is a file name of plain characters only, so it can be shown and named in a form as it is.
 func safeName(name string) bool {

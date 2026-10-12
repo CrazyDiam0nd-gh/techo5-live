@@ -40,10 +40,10 @@ func (d *Display) noticeLights(on, night bool) bool {
 // touches, so with one up there is nothing a touch could release.
 func noticeID() string {
 	if v, up := home.Get().Camera(); up {
-		if v.Caption != nil {
+		if v.Caption != nil && !v.OverPlain {
 			return v.Caption.ID
 		}
-		return ""
+		return "" // a camera, or a notification's picture over one that was up anyway, is not held back
 	}
 	if n, up := notify.Get().Showing(); up {
 		return n.ID

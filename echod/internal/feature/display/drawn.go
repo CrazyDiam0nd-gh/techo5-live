@@ -119,6 +119,14 @@ func (r *paint) textFace(bold bool, size int) font.Face {
 	if fc == nil {
 		return nil
 	}
+	// The faces of a font no longer in use go: they keep the owner's own font files they were made
+	// from open (lib/fonts), a removed one's space not freed, a replaced one read as it was.
+	textFaces.Range(func(k, _ any) bool {
+		if k.(textKey).font != key.font {
+			textFaces.Delete(k)
+		}
+		return true
+	})
 	textFaces.Store(key, fc)
 	return fc
 }

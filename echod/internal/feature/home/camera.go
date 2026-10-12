@@ -1,10 +1,12 @@
 package home
 
 import (
+	"context"
 	"image"
 	_ "image/jpeg" // Home Assistant serves camera snapshots as JPEG
 	"log/slog"
 	"strings"
+	"sync"
 	"time"
 
 	esphome "github.com/ygelfand/go-esphome-device"
@@ -17,9 +19,10 @@ import (
 )
 
 // The cameras page: "show the front door" puts a camera's live view up for a while, a tap takes it
-// down. Frames are Home Assistant's snapshots through the token, fetched one after another while
-// the view is up, decoded and scaled here; a few a second is what the panel and the SoC manage,
-// and enough to see who is there.
+// down. A camera Home Assistant can stream is shown from its live stream, decoded by the video
+// decoder, when Live camera video is on (camera_stream.go). Any other, and one whose stream fails, is
+// shown from Home Assistant's snapshots through the token, fetched one after another while the view is
+// up, decoded and scaled here: a few a second, enough to see who is there.
 
 const (
 	// cameraShow is how long a camera stays up when asked for by voice.
@@ -49,6 +52,10 @@ type CameraView struct {
 	Error  string      // why there is no frame, when there is none
 	// Caption is a notification's words over the view (feature/notify); nil for a plain camera.
 	Caption *Caption
+	// OverPlain is a notification's picture put over a camera somebody was already watching (a
+	// doorbell's): the screen does not hold it back at night (display's gateCamera), since the camera
+	// was up anyway.
+	OverPlain bool
 	// View numbers the view, so that a tap can close the view it was read from and not whichever is up
 	// when it gets around to it (HideView). Until cannot say which view it is: it moves when the first
 	// frame arrives. A camera asked for again while its view is up keeps its number, and a different
@@ -56,6 +63,20 @@ type CameraView struct {
 	View uint64
 
 	span time.Duration // how long it was asked for; Until is restarted from the first frame
+	gen  uint64        // which camera view this is: frames fetched for an earlier one are not shown in it
+}
+
+// frameMu keeps a streamed camera's picture still while the screen draws it: a stream's frames are
+// copied into one picture for the whole stream (showStream) rather than each made anew, which at 24
+// frames a second of 896×672 is over fifty megabytes a second for the collector. A frame from anywhere
+// else is never written to once it is shown.
+var frameMu sync.RWMutex
+
+// ReadFrame runs draw with a CameraView's Frame kept still: the screen draws a frame inside it.
+func ReadFrame(draw func()) {
+	frameMu.RLock()
+	defer frameMu.RUnlock()
+	draw()
 }
 
 // LocalCamera is the entity name of the device's own camera on the list; it is not a Home
@@ -147,7 +168,8 @@ func (f *Feature) showCameraCaptioned(entity string, d time.Duration, sound bool
 		}
 	}
 	f.mu.Lock()
-	fresh := f.cam.Entity != entity || time.Now().After(f.cam.Until)
+	now := time.Now()
+	fresh := f.cam.Entity != entity || now.After(f.cam.Until)
 	if !listed && !fresh {
 		name = f.cam.Name // the same camera asked for again keeps the name it was given, looked up or not
 	}
@@ -157,19 +179,39 @@ func (f *Feature) showCameraCaptioned(entity string, d time.Duration, sound bool
 		// number, so a tap read before the re-show still closes it; anything else is a new view.
 		view = f.newView()
 	}
+	up := f.cam.Entity != "" && now.Before(f.cam.Until)
+	overPlain := c != nil && up && (f.cam.Caption == nil || f.cam.OverPlain)
+	if !sameCaption(f.cam.Caption, c) {
+		f.endCaption("replaced")
+	}
+	until := now.Add(d)
+	if !fresh && f.cam.Until.After(until) {
+		// The same camera asked for again for less time than it has left: a notification's picture of
+		// the doorbell's own camera does not cut the doorbell's view short.
+		until = f.cam.Until
+	}
 	f.cancelStill() // a camera in place of a still: the still's picture is not wanted
-	f.cam = CameraView{Entity: entity, Name: name, Until: time.Now().Add(d), Frame: f.cam.Frame, Caption: c, span: d, View: view}
+	if c != nil {
+		f.dropWaiting("replaced") // a newer notification's picture: one still waiting was replaced by it
+	}
+	f.cam = CameraView{Entity: entity, Name: name, Until: until, Frame: f.cam.Frame, Caption: c, OverPlain: overPlain, span: d, View: view, gen: f.cam.gen}
+	var ctx context.Context
 	if fresh {
 		f.cam.Frame = nil
 		f.camMuted = false // a fresh view starts audible if its sound was asked for
+		// A view of its own, ending what fetched for the one before: a camera closed while its stream
+		// was starting and opened again must not end up with two decoders.
+		ctx = f.newCameraFetch()
 	}
+	gen := f.cam.gen
 	f.mu.Unlock()
+	live := CameraLive() // read here, not by the fetch: a test swaps the config once this returns
 	slog.Info("camera up", "entity", entity, "for", d, "sound", fresh && sound)
 	if fresh {
 		if entity == LocalCamera {
 			f.spawn(func() { f.localFrames() })
 		} else {
-			f.spawn(func() { f.fetchFrames(entity) })
+			f.spawn(func() { f.fetchFrames(ctx, entity, gen, live) })
 		}
 		if sound && !isReolink(entity) {
 			// The sound is asked of Home Assistant and taken off the speaker when this view ends; a
@@ -223,10 +265,64 @@ func (f *Feature) HoldCamera(entity string, d time.Duration) {
 	}
 }
 
+// endCaption notes why the notification's view up now is going, if one is, for notify to report
+// (PictureEnded). The caller holds f.mu.
+func (f *Feature) endCaption(why string) {
+	if c := f.cam.Caption; c != nil && c.ID != "" && f.cam.Entity != "" && time.Now().Before(f.cam.Until) {
+		f.endedID, f.endedWhy = c.ID, why
+	}
+}
+
+// dropWaiting forgets the still waiting for the camera view, if there is one, and wakes what waits with
+// it (showWaiting). why is how it went, as endCaption, noted unless its time had run out; "" for a still
+// that is coming up, or that nobody is to hear about. The caller holds f.mu.
+func (f *Feature) dropWaiting(why string) {
+	w := f.waiting
+	if w == nil {
+		return
+	}
+	if why != "" && w.c.ID != "" && time.Now().Before(w.until) {
+		f.endedID, f.endedWhy = w.c.ID, why
+	}
+	close(w.gone)
+	f.waiting = nil
+}
+
+// PictureEnded is why notification id's view went other than by running out: "replaced" by another
+// camera or picture, "dismissed" by a tap or the camera page closing; "" when it ran out, or is up.
+func (f *Feature) PictureEnded(id string) string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if id == "" || f.endedID != id {
+		return ""
+	}
+	return f.endedWhy
+}
+
 // newView is the number for a view being put up. The caller holds f.mu.
 func (f *Feature) newView() uint64 {
 	f.viewSeq++
 	return f.viewSeq
+}
+
+// newCameraFetch gives the camera view being put up a number of its own (CameraView.gen) and the
+// context its frames are fetched with, ending the one before's. The caller holds f.mu.
+func (f *Feature) newCameraFetch() context.Context {
+	f.stopCameraFetch()
+	f.camGen++
+	f.cam.gen = f.camGen
+	ctx, cancel := context.WithCancel(context.Background())
+	f.camCancel = cancel
+	return ctx
+}
+
+// stopCameraFetch ends what the camera view up fetches its frames with, a stream's decoder among them,
+// now rather than at its next look at the clock. The caller holds f.mu.
+func (f *Feature) stopCameraFetch() {
+	if f.camCancel != nil {
+		f.camCancel()
+		f.camCancel = nil
+	}
 }
 
 // sameCaption is whether two captions are the same notification's (or both none).
@@ -244,7 +340,9 @@ func (f *Feature) HideView(view uint64) bool {
 	f.mu.Lock()
 	ours := f.cam.View == view && f.cam.Entity != "" && time.Now().Before(f.cam.Until)
 	if ours {
+		f.endCaption("dismissed")
 		f.cancelStill()
+		f.stopCameraFetch()
 		f.cam.Until = time.Time{}
 		f.cam.Caption = nil
 	}
@@ -260,7 +358,9 @@ func (f *Feature) HideView(view uint64) bool {
 // tap on a notification that came after it.
 func (f *Feature) HideCamera() {
 	f.mu.Lock()
+	f.endCaption("dismissed")
 	f.cancelStill()
+	f.stopCameraFetch()
 	f.cam.Until = time.Time{}
 	f.cam.Caption = nil
 	f.mu.Unlock()
@@ -272,9 +372,17 @@ func (f *Feature) HideCamera() {
 // takes the page cannot take the newer one's view down.
 func (f *Feature) HidePicture(id string) bool {
 	f.mu.Lock()
+	if f.waiting != nil && f.waiting.c.ID == id {
+		// Its picture never went up: it was waiting for the camera view to end.
+		f.dropWaiting("dismissed")
+		f.mu.Unlock()
+		return true
+	}
 	ours := f.cam.Caption != nil && f.cam.Caption.ID == id && time.Now().Before(f.cam.Until)
 	if ours {
+		f.endCaption("dismissed")
 		f.cancelStill()
+		f.stopCameraFetch()
 		f.cam.Until = time.Time{}
 		f.cam.Caption = nil
 	}
@@ -292,39 +400,54 @@ func (f *Feature) viewIsUp(entity string) bool {
 	return f.cam.Entity == entity && time.Now().Before(f.cam.Until)
 }
 
-// fetchFrames pulls snapshots while the view is up, one after another.
-func (f *Feature) fetchFrames(entity string) {
-	for {
-		f.mu.Lock()
-		up := f.viewIsUp(entity)
-		f.mu.Unlock()
-		if !up {
-			return
-		}
+// fetchFrames shows the camera while its view, gen, is up: its live stream where it has one and live
+// video is on (camera_stream.go), else, or once that fails, snapshots one after another.
+func (f *Feature) fetchFrames(ctx context.Context, entity string, gen uint64, live bool) {
+	if live && f.streamFrames(ctx, entity, gen) {
+		return
+	}
+	for f.viewUp(ctx, entity, gen) {
 		frame, err := f.snapshot(entity)
-		f.mu.Lock()
-		if f.viewIsUp(entity) {
-			if err != nil {
-				f.cam.Error = err.Error()
-			} else {
-				// The time on screen counts from the first picture, not from the request: some
-				// cameras take a while to start a stream, and a view that closes as it opens
-				// is no view at all.
-				if f.cam.Frame == nil {
-					if until := time.Now().Add(f.cam.span); until.After(f.cam.Until) {
-						f.cam.Until = until // never shorter than a hold asked for (HoldCamera)
-					}
-				}
-				f.cam.Frame, f.cam.Error = frame, ""
-			}
-		}
-		f.mu.Unlock()
-		f.Changed.Emit(struct{}{})
+		f.showFrame(entity, gen, frame, err)
 		if err != nil {
 			slog.Warn("camera frame", "entity", entity, "err", err)
-			time.Sleep(cameraRetry)
+			pause(ctx, cameraRetry)
 		}
 	}
+}
+
+// viewUp is whether camera view gen of entity is still on screen.
+func (f *Feature) viewUp(ctx context.Context, entity string, gen uint64) bool {
+	if ctx.Err() != nil {
+		return false
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.viewIsUp(entity) && f.cam.gen == gen
+}
+
+// showFrame puts a frame of entity's on screen, or why there is none, if its view gen is still up. The
+// check and the write are one step under f.mu (viewIsUp): a frame on its way when somebody tapped must
+// not put the view back up.
+func (f *Feature) showFrame(entity string, gen uint64, frame *image.RGBA, err error) {
+	f.mu.Lock()
+	if f.viewIsUp(entity) && f.cam.gen == gen {
+		if err != nil {
+			f.cam.Error = err.Error()
+		} else {
+			// The time on screen counts from the first picture, not from the request: some
+			// cameras take a while to start a stream, and a view that closes as it opens
+			// is no view at all.
+			if f.cam.Frame == nil {
+				if until := time.Now().Add(f.cam.span); until.After(f.cam.Until) {
+					f.cam.Until = until // never shorter than a hold asked for (HoldCamera)
+				}
+			}
+			f.cam.Frame, f.cam.Error = frame, ""
+		}
+	}
+	f.mu.Unlock()
+	f.Changed.Emit(struct{}{})
 }
 
 // localFrames shows the device's own camera while the view is up: every frame the sensor

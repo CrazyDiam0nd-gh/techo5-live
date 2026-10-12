@@ -103,3 +103,21 @@ func previewFont(t *testing.T) {
 	}
 	fonts.Rescan()
 }
+
+// The big dashboard tiles' faces of a font no longer in use are let go when the new font's are made,
+// so a font file of one's own removed or replaced is not kept open by them.
+func TestTileFacesOfAnOldFontGo(t *testing.T) {
+	p := &paint{sNum: 1, sDen: 1}
+	p.font, p.fontGen = "inter", 7
+	if p.textFace(false, 40) == nil || p.textFace(true, 50) == nil {
+		t.Fatal("no face")
+	}
+	p.fontGen = 8
+	p.textFace(false, 40)
+	textFaces.Range(func(k, _ any) bool {
+		if k.(textKey).font != (fontKey{"inter", 8}) {
+			t.Errorf("a face of %+v is still kept", k)
+		}
+		return true
+	})
+}

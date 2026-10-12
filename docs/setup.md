@@ -87,6 +87,34 @@ data:
   seconds: 60
 ```
 
+With **Live camera video** on (a switch of the device's in Home Assistant, under its configuration;
+off on a new device), a camera Home Assistant can stream (one that plays live in its own dashboard,
+from an RTSP camera or an integration with a stream) is shown as live video, decoded on the device from
+Home Assistant's HLS stream. Snapshots keep coming until the first moving frame, which takes a few
+seconds, more when Home Assistant still has to start the camera's stream. The picture is a few seconds
+behind the camera: HLS comes in parts a keyframe interval long. Other cameras, and any whose stream
+fails or that the device cannot decode (H.265, or a stream over 1080p), are shown from snapshots, a few
+a second, as with the switch off. A streamed camera's sound, when the view has one, comes from the same
+stream, decoded on the device: as far behind the camera as the picture, where the stream converted by
+Home Assistant and sent back was some twenty seconds. A stream with no sound in it falls back to Home
+Assistant's way. A camera's sub stream (often called *fluent* or *sub*) is the better choice: it is
+sharper than the panel needs anyway, starts sooner and costs less.
+
+Where the image's decoder reads RTSP, a camera given an RTSP address for talking through it (below) is
+heard from that address instead: live, a word said at the device comes back out of it through a
+doorbell's own microphone in two to three seconds, against eight from the stream. A camera's picture
+can be read from its own address too, beside the talking one on the setup page: give it a stream about
+the screen's size (for a Reolink, `rtsp://<address>:554/h264Preview_01_sub`). Both use the cameras'
+login, so both need **Talk through cameras** allowed, and both are used only with **Live camera
+video** on: with it off the camera page shows snapshots and the sound comes through Home Assistant,
+whatever addresses are set. The login is sent only protected (Digest): a camera that offers only Basic
+(the password in the clear) is not read this way. Where an address cannot be read, the device falls
+back to Home Assistant's stream, and on a device whose kernel cannot keep the decoder off its own
+network (the Spot) it uses that stream only, and the setup page offers no picture address.
+Each of these is a connection of its own to the camera: with Talk in use as well, a view can hold three
+(picture, sound, Talk) on top of Home Assistant's own. A camera that allows fewer
+refuses the last to ask: a picture or a sound then falls back as above, and Talk does not connect.
+
 ### Talking through a camera
 
 On the Show and the Spot, **Talk** on the camera page sends the device's microphones to the camera's
@@ -271,10 +299,10 @@ the Spot too, in its settings.
   video** on, from DLNA apps. Off on a new device. On the setup page's Screen & Photos tab. See
   [Video](video.md).
 - **Screen language** (Settings → General): the clock's day and date, the forecast's days, the
-  weather's words and the alarm after the date are written in it: German, Spanish, French, Italian or
-  Dutch, and English for *Match all* or *English*. It also picks which words the screen listens for.
-  It doesn't change what the assistant understands or says, and the rest of the screen stays in
-  English.
+  weather's words and the alarm after the date are written in it: German, Spanish, French, Italian,
+  Dutch or Russian, and English for *Match all* or *English*. It also picks which words the screen
+  listens for. It doesn't change what the assistant understands or says, and the rest of the screen
+  stays in English.
 - **Turn screen**: how a voice request looks. **Classic** is the words, **Wave** is glowing lines and
   **Bars** is an LED-style equalizer, both moving with the voice. This one is on the Spot too.
 - **Subtle mute ring** (Spot, in Home Assistant): the red ring shown while the microphones are muted
@@ -299,8 +327,9 @@ device's fonts folder over SSH ([Set the SSH authorized keys](actions.md#set-the
   order of their file names, so name them `1-korean.otf`, `2-japanese.otf` to choose.
 - From a collection (`.ttc`) the first font is used.
 - A font is read from the device's storage as letters are drawn, not loaded into memory whole.
-- A new or removed font shows within a few seconds, with no restart. A file that isn't a font the
-  device can draw is left unused; the setup page lists it and says why.
+- A new, replaced or removed font shows within a few seconds, with no restart. A file that isn't a
+  font the device can draw is left unused, and so is one that goes wrong while drawing; the setup page
+  lists it and says why.
 
 ### Presence and gestures
 
@@ -330,7 +359,10 @@ Under Settings → **Sound**, or on the device's Assist satellite in Home Assist
 
 - **Wake word**: Okay Nabu, Hey Jarvis, Alexa and others. Choosing none is fine if you only want
   the screen and music.
-- **Wake word sensitivity**: raise it if the device wakes by mistake.
+- **Wake word threshold** (0.5 to 0.99): the score the wake word has to reach. Higher wakes by
+  mistake less often; lower hears you more easily. If it wakes by mistake, raise it a step at a time
+  (0.90, 0.93, 0.95) and watch **Last wake score** on the device in Home Assistant: a false wake that
+  scored 0.91 is gone at 0.93. Called Wake word sensitivity before v1.2.8.
 - **Quiet hours** and **Do not disturb**.
 
 On the setup page (Sound & Voice) or in Home Assistant, **Night volume** turns the device down to that
@@ -491,10 +523,10 @@ While the lock is on, the PIN is also asked for when **Allow** is pressed on the
 
 ## 9. A fixed address
 
-The device gets its address from the router (DHCP) unless told otherwise. To give it a fixed one, for
-example from a range the router does not hand out, open the setup page, go to **Connections →
-Network address**, choose **Fixed**, and type the address (`192.168.1.50`, or `192.168.1.50/24`
-with its prefix), the gateway, and DNS servers if they are not the gateway. On an Echo Show the
+The device gets its address from the router (DHCP). On an Echo Show or an Echo Spot (not an Echo
+Dot) it can be given a fixed one instead: for example from a range the router does not hand out,
+open the setup page, go to **Connections → Network address**, choose **Fixed**, and type the
+address (`192.168.1.50`, or `192.168.1.50/24` with its prefix), the gateway, and DNS servers if they are not the gateway. On an Echo Show the
 same is on the screen, under Settings → Connections → **Network address**, with a keypad; the
 [network_address action](actions.md#set-the-network-address) does it from Home Assistant.
 
@@ -506,7 +538,10 @@ still starting up.
 
 The address belongs to the Wi-Fi it was set on. On another network, or when its gateway has not
 answered for five minutes (a router moved to another subnet, say), the device takes an address from
-the router instead until it restarts, so it can still be found; the setting itself is kept.
+the router instead, so it can still be found; the setting itself is kept. It goes back to the fixed
+address by itself once it is on that Wi-Fi again and the gateway answers, checked every minute (after
+an attempt that did not hold, half an hour later). Saving the same address again tries it again at
+once, and on another network makes it that network's address.
 
 After a change the setup page is at the new address, and the browser has to be let in there again.
 Home Assistant follows the device by itself, about two minutes after the change: it first has to notice

@@ -1,7 +1,9 @@
 package home
 
 import (
+	"bytes"
 	"context"
+	"log/slog"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -580,4 +582,51 @@ func TestNothingButAChangeWakesTheSensorsWithoutAHeldTrack(t *testing.T) {
 	if n := room.read() - reads; n != 0 {
 		t.Errorf("after the held track: read %d times more, want none", n)
 	}
+}
+
+// The log says the sensors changed, but what is playing only at Debug: a log pasted into an issue
+// should not be the owner's listening history.
+func TestTheLogIsNoListeningHistory(t *testing.T) {
+	var buf lockedBuffer
+	was := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelInfo})))
+	t.Cleanup(func() { slog.SetDefault(was) })
+
+	f, room, writes := nowPlayingFeature(t)
+	nowSettle = 50 * time.Millisecond
+	runNowPlaying(t, f)
+	room.set(playing(playingSnapshot{recvFrom: AirPlayName, recvTitle: "Purple Rain", recvArtist: "Prince", recvAlbum: "Wild Album"}))
+	f.pokeNowPlaying()
+	if !waitFor(func() bool { return writes.shown().album == "Wild Album" }) {
+		t.Fatalf("the sensors say %+v", writes.shown())
+	}
+	// The line is logged just after the sensors are written: waited for, not read at once.
+	waitFor(func() bool { return strings.Contains(buf.String(), "now playing sensors") })
+	logged := buf.String()
+	if !strings.Contains(logged, "now playing sensors") {
+		t.Errorf("the change was not logged: %q", logged)
+	}
+	for _, s := range []string{"Purple Rain", "Prince", "Wild Album"} {
+		if strings.Contains(logged, s) {
+			t.Errorf("the log at Info names %q: %q", s, logged)
+		}
+	}
+}
+
+// lockedBuffer is a bytes.Buffer safe to write from the loop's goroutine and read from the test's.
+type lockedBuffer struct {
+	mu sync.Mutex
+	b  bytes.Buffer
+}
+
+func (l *lockedBuffer) Write(p []byte) (int, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.b.Write(p)
+}
+
+func (l *lockedBuffer) String() string {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.b.String()
 }

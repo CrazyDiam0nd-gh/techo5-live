@@ -5,6 +5,7 @@ import (
 
 	"golang.org/x/image/font"
 	"golang.org/x/image/font/opentype"
+	"golang.org/x/image/font/sfnt"
 	"golang.org/x/image/math/fixed"
 )
 
@@ -91,6 +92,41 @@ func TestMissingCharactersFallBackToGo(t *testing.T) {
 	}
 }
 
+// A layer that breaks while the second character of a pair is looked up is dropped, and the first
+// character's layer is still the one it was: kerning is not read from the layer that took its place.
+func TestKernAfterALayerIsDropped(t *testing.T) {
+	goFont, _ := Font(Go, false)
+	inter, _ := Font("inter", false)
+	a, _ := opentype.NewFace(inter, &opentype.FaceOptions{Size: 30, DPI: 72})
+	b, _ := opentype.NewFace(goFont, &opentype.FaceOptions{Size: 30, DPI: 72})
+
+	broken := &sfnt.Font{} // has no x, and breaks on ♪
+	saved := glyphIndex
+	t.Cleanup(func() { glyphIndex = saved })
+	glyphIndex = func(f *sfnt.Font, buf *sfnt.Buffer, r rune) (sfnt.GlyphIndex, error) {
+		if f != broken {
+			return saved(f, buf, r)
+		}
+		if r == '♪' {
+			panic("broken")
+		}
+		return 0, nil
+	}
+	// x is Inter's, ♪ Go's (Inter has none): two layers, so no kerning between them.
+	s := NewStack(nil, Layer{Face: a, Font: broken}, Layer{Face: a, Font: inter}, Layer{Face: kernFace{b}, Font: goFont})
+	if k := s.Kern('x', '♪'); k != 0 {
+		t.Errorf("kerning %v between two layers' characters, read from the layer after the one dropped", k)
+	}
+	if len(s.layers) != 2 {
+		t.Errorf("%d layers, want the broken one dropped", len(s.layers))
+	}
+}
+
+// kernFace kerns every pair, so kerning read from it shows.
+type kernFace struct{ font.Face }
+
+func (kernFace) Kern(rune, rune) fixed.Int26_6 { return 99 }
+
 // A stack takes each character from the first layer that has it, and a layer with no font has every
 // one: the order is the choice, so another script's font can go in ahead of Go.
 func TestStackOrder(t *testing.T) {
@@ -100,7 +136,7 @@ func TestStackOrder(t *testing.T) {
 	b, _ := opentype.NewFace(goFont, &opentype.FaceOptions{Size: 30, DPI: 72})
 	last, _ := opentype.NewFace(goFont, &opentype.FaceOptions{Size: 60, DPI: 72})
 
-	s := NewStack(nil, Layer{a, inter}, Layer{b, goFont}, Layer{Face: last})
+	s := NewStack(nil, Layer{Face: a, Font: inter}, Layer{Face: b, Font: goFont}, Layer{Face: last})
 	if g, _ := s.GlyphAdvance('x'); g != adv(a, 'x') {
 		t.Error("x was not the first layer's")
 	}
@@ -116,7 +152,7 @@ func TestStackOrder(t *testing.T) {
 	}
 
 	// Without a catch-all, the first layer draws what nobody has, as it would alone.
-	s = NewStack(nil, Layer{a, inter}, Layer{b, goFont})
+	s = NewStack(nil, Layer{Face: a, Font: inter}, Layer{Face: b, Font: goFont})
 	if s.Has('\U0001F600') {
 		t.Error("says it has a character neither font has")
 	}

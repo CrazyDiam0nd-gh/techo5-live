@@ -23,6 +23,14 @@ export T5_PRODUCT
 
 # --- Mounts the initramfs normally provides, for a boot that did not come through it.
 mountpoint -q /proc || mount -t proc proc /proc
+# Each user sees only its own processes. The daemon hands the camera decoder a camera's login, and the
+# Home Assistant stream link with its token, on the command line, which /proc/<pid>/cmdline shows to
+# anyone otherwise: the receivers (streaming), the decoder (techo5-video), avahi and dbus-daemon
+# (messagebus) are the users that are not root, and none of them needs another user's processes.
+# dbus-daemon learns who a peer is from the socket (SO_PEERCRED) and its groups from the user database,
+# not from /proc. Root sees everything, as before. hidepid=2 rather than "invisible", which these 4.9
+# kernels do not know (5.8). Before anything that is not root starts.
+mount -o remount,hidepid=2 /proc 2>/dev/null || log "proc: hidepid=2 refused; other users' processes stay visible"
 mountpoint -q /sys || mount -t sysfs sysfs /sys
 if ! mountpoint -q /dev; then
 	mount -t tmpfs -o mode=0755 tmpfs /dev
@@ -171,7 +179,7 @@ t5_bt_up "$BT_MODULE" /var/log
 				t5_ntp
 				ntpd $(t5_ntp_peers) > /dev/null 2>&1
 			fi
-			# A fixed address whose gateway stays silent gives way to DHCP for the session
+			# A fixed address whose gateway stays silent gives way to DHCP until it answers again
 			# (techo5-net check): without it, a device whose router moved to another subnet, or
 			# whose supplicant hung, would keep an address and a route and never be noticed.
 			[ -x /usr/local/sbin/techo5-net ] && /usr/local/sbin/techo5-net check

@@ -389,6 +389,54 @@ func TestAPictureNotificationWaitsOutTheNightToo(t *testing.T) {
 	if _, shown := d.gateCamera(home.CameraView{Entity: "camera.deck"}, true, true); !shown {
 		t.Error("a camera the owner asked for was held at night")
 	}
+	over := home.CameraView{Entity: "camera.deck", Caption: &home.Caption{ID: "over"}, OverPlain: true}
+	if _, shown := d.gateCamera(over, true, true); !shown {
+		t.Error("a notification's picture over a camera somebody was watching was held at night, taking the camera away")
+	}
+}
+
+// A long press that releases a held notification on the night light only releases it: the night light
+// stays, with the card on it, where a long press otherwise lifts the night light to full screen.
+func TestAHoldThatReleasesANotificationKeepsTheNightLight(t *testing.T) {
+	d := noticeDisplay(t, showWide, showHigh)
+	atNight(t)
+	if err := config.Set().Screen().AtNight(true, true); err != nil {
+		t.Fatal(err)
+	}
+	d.nightGlow = true
+	if err := notify.Get().Notify("The washer is done", "Washer", "", "", "", "", 600); err != nil {
+		t.Fatal(err)
+	}
+	if !d.noticeHeld() {
+		t.Fatal("the notification is not held at night")
+	}
+	d.gesture(touch.Gesture{Kind: touch.Hold, X: 5, Y: 5})
+	if d.noticeHeld() {
+		t.Error("the long press did not release the notification")
+	}
+	d.mu.Lock()
+	glowing := d.nightGlow
+	d.mu.Unlock()
+	if !glowing {
+		t.Error("the long press that released the notification also lifted the night light")
+	}
+	// The next long press is the night light's own.
+	d.gesture(touch.Gesture{Kind: touch.Hold, X: 5, Y: 5})
+	d.mu.Lock()
+	glowing = d.nightGlow
+	d.mu.Unlock()
+	if glowing {
+		t.Error("a long press with nothing held did not lift the night light")
+	}
+}
+
+// A still is redrawn once a second, as a static page is; a camera at a camera's pace.
+func TestAStillIsPacedLikeAStaticPage(t *testing.T) {
+	still := home.CameraView{Entity: "/local/door.png", Caption: &home.Caption{ID: "1"}}
+	live := home.CameraView{Entity: "camera.deck", Caption: &home.Caption{ID: "2"}}
+	if !stillOnly(still) || stillOnly(live) || stillOnly(home.CameraView{Entity: "camera.deck"}) {
+		t.Error("stillOnly takes a camera for a still, or a still for a camera")
+	}
 }
 
 // The caption's words are light on the shade in every theme: the theme's text color is dark on Paper

@@ -89,27 +89,124 @@ func (f *Feature) ShowPicture(src string, c Caption, d time.Duration, sound stri
 		f.showCameraCaptioned(src, d, ParseOnOff(sound, CameraSound()), &c)
 		return nil
 	}
+	f.mu.Lock()
+	if f.plainCameraUp() {
+		// A camera somebody is watching (a doorbell's, or one asked for) is not taken from them, its
+		// stream and sound ended, for a picture: the picture waits for the view to end, for as long as
+		// it was to be up, and replaces any picture already waiting.
+		first := f.waiting == nil
+		f.dropWaiting("replaced")
+		f.waiting = &waitingStill{src: src, path: path, c: c, until: time.Now().Add(d), gone: make(chan struct{})}
+		camera := f.cam.Entity
+		f.mu.Unlock()
+		slog.Info("picture waits for the camera view up", "source", redactURL(src), "camera", camera)
+		if first {
+			f.spawn(f.showWaiting)
+		}
+		return nil
+	}
+	shown := f.stillLocked(src, path, c, d)
+	f.mu.Unlock()
+	shown()
+	return nil
+}
+
+// waitingStill is a picture notification's still that waits for the camera view up to end.
+type waitingStill struct {
+	src, path string
+	c         Caption
+	until     time.Time     // when its notification would have ended, had it been shown when asked
+	gone      chan struct{} // closed once it is no longer the still waiting (dropWaiting)
+}
+
+// waitingPoll is how often a waiting still looks to see whether the camera view is over; a variable
+// for the tests.
+var waitingPoll = 500 * time.Millisecond
+
+// plainCameraUp is whether the view up is a camera with no notification's words on it. The caller holds
+// f.mu.
+func (f *Feature) plainCameraUp() bool {
+	return f.cam.Entity != "" && f.cam.Caption == nil && time.Now().Before(f.cam.Until)
+}
+
+// showWaiting shows the still waiting for the camera view once that view is over, unless it was taken
+// down or replaced meanwhile, or its time ran out while it waited. A still taken down, replaced, or
+// dropped as the device shuts down wakes it at once rather than at its next look: it ends then, or
+// carries on for a still that took the waiting one's place.
+func (f *Feature) showWaiting() {
+	for {
+		f.mu.Lock()
+		w := f.waiting
+		f.mu.Unlock()
+		if w == nil {
+			return
+		}
+		look := time.NewTimer(waitingPoll)
+		select {
+		case <-look.C:
+		case <-w.gone:
+			look.Stop()
+		}
+		f.mu.Lock()
+		w = f.waiting
+		switch {
+		case w == nil:
+			f.mu.Unlock()
+			return
+		case !time.Now().Before(w.until):
+			f.dropWaiting("")
+			f.mu.Unlock()
+			return
+		case f.plainCameraUp():
+			f.mu.Unlock()
+			continue
+		}
+		shown := f.stillLocked(w.src, w.path, w.c, time.Until(w.until))
+		f.mu.Unlock()
+		shown()
+		return
+	}
+}
+
+// stopWaiting drops the still waiting for the camera view as the device shuts down: what waits with it
+// ends at once.
+func (f *Feature) stopWaiting() {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.dropWaiting("")
+}
+
+// stillLocked puts a still's view up in place of whatever is up. The caller holds f.mu, and runs what
+// it returns once it has let go of it.
+func (f *Feature) stillLocked(src, path string, c Caption, d time.Duration) func() {
 	name := c.Title
 	if name == "" {
 		name = untitled
 	}
-	f.mu.Lock()
+	f.endCaption("replaced")
+	if f.waiting != nil && f.waiting.c.ID != c.ID {
+		f.dropWaiting("replaced") // another still, not the waiting one coming up
+	} else {
+		f.dropWaiting("")
+	}
 	f.cancelStill() // the still this one replaces is not wanted any more
+	// Nor the camera, and its stream's decoder ends now.
+	f.stopCameraFetch()
 	ctx, cancel := context.WithCancel(context.Background())
 	f.stillCancel = cancel
 	f.cam = CameraView{Entity: src, Name: name, Until: time.Now().Add(d), Caption: &c, span: d, View: f.newView()}
 	f.camMuted = false
-	f.mu.Unlock()
-	slog.Info("picture up", "source", redactURL(src), "for", d)
-	f.spawn(func() {
-		defer cancel() // the context is done with once the fetch is
-		f.fetchStill(ctx, src, path, c.ID)
-	})
-	if name == untitled && strings.HasPrefix(src, "image.") {
-		f.spawn(func() { f.lookUpName(src, untitled) })
+	return func() {
+		slog.Info("picture up", "source", redactURL(src), "for", d)
+		f.spawn(func() {
+			defer cancel() // the context is done with once the fetch is
+			f.fetchStill(ctx, src, path, c.ID)
+		})
+		if name == untitled && strings.HasPrefix(src, "image.") {
+			f.spawn(func() { f.lookUpName(src, untitled) })
+		}
+		f.Changed.Emit(struct{}{})
 	}
-	f.Changed.Emit(struct{}{})
-	return nil
 }
 
 // stillTurn lets one still be fetched and decoded at a time. A picture can be 8 MB of bytes and a
@@ -242,8 +339,15 @@ func still(ctx context.Context, path string, wanted func() bool) (*image.RGBA, e
 // PictureIsLive is whether a notification's picture is a camera, shown live, rather than one still.
 func PictureIsLive(src string) bool { return strings.HasPrefix(src, "camera.") }
 
-// PictureUp is whether the camera page is up with notification id's words on it.
+// PictureUp is whether the camera page is up with notification id's words on it, or its still is
+// waiting for the camera view up to end.
 func (f *Feature) PictureUp(id string) bool {
+	f.mu.Lock()
+	waiting := f.waiting != nil && f.waiting.c.ID == id && time.Now().Before(f.waiting.until)
+	f.mu.Unlock()
+	if waiting {
+		return true
+	}
 	v, up := f.Camera()
 	return up && v.Caption != nil && v.Caption.ID == id
 }

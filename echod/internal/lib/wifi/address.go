@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"os"
 	"os/exec"
@@ -12,7 +13,9 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
+	"unicode"
 )
 
 // How the Wi-Fi interface gets its IPv4 address: from DHCP, which is how every device starts, or fixed,
@@ -29,7 +32,8 @@ import (
 //
 // At boot and when Wi-Fi comes back, the setting is put on as it is, as on any device with a fixed
 // address; on another network than it was set on, or with its gateway silent for five minutes, the
-// device uses DHCP for the rest of the session instead (techo5-net up and check).
+// device uses DHCP instead, until it is back on that network with the gateway answering (techo5-net up
+// and check).
 
 // addressFile holds the setting in use, in KEY=value lines techo5-net reads and checks. Only what was
 // checked as an IPv4 address is ever written to it, never text as typed.
@@ -41,19 +45,69 @@ func candidate() string { return addressFile + ".new" }
 // fallbackFile says why the last setting tried was not kept.
 var fallbackFile = "/run/techo5/network-fallback"
 
+// sessionFile, while there, says why DHCP stands in for the fixed address in use (techo5-net).
+var sessionFile = "/run/techo5/network-dhcp-session"
+
 // netTool applies the setting.
 var netTool = "/usr/local/sbin/techo5-net"
+
+// netCaps is the line a techo5-net that tries fixed addresses carries. The Echo Dot's image has a
+// techo5-net too, a different one that joins Wi-Fi whenever it is run: driven with "try" it would start
+// another DHCP client at each Save and never apply anything. So the script is read, never run, to know
+// which one it is.
+const netCaps = "\n# techo5-net-caps: fixed-address\n"
+
+// trialTimeout is how long a trial may take before it is cut short; a variable for the tests.
+var trialTimeout = 2 * time.Minute
+
+// currentAddress is the interface's IPv4 address; a variable for the tests.
+var currentAddress = address
 
 // changing is held for a whole change, written and tried: two Saves close together (a double click, a
 // reload, a script retrying, the setup page and the action at once) are tried one after the other, never
 // over each other.
 var changing sync.Mutex
 
-// AddressSupported is whether this image can put a fixed address on: an image without techo5-net would
-// save one and never try it, so the setting is not offered there.
+// trialing is set while techo5-net tries a setting (Trialing).
+var trialing atomic.Bool
+
+// Trialing is whether a setting is on trial now: the address on the interface may be one the device is
+// only trying, and may go back to the one before within the minute.
+func Trialing() bool { return trialing.Load() }
+
+// supported caches AddressSupported for the netTool it was worked out for.
+var supported struct {
+	sync.Mutex
+	tool  string
+	known bool
+	ok    bool
+}
+
+// AddressSupported is whether this image can put a fixed address on: a build for a device whose image
+// has the techo5-net that tries one (address_build.go), with that script in place. An image without it
+// would save a setting and never try it, and the Echo Dot's own techo5-net does something else
+// entirely, so the setting is not offered there.
 func AddressSupported() bool {
-	_, err := os.Stat(netTool)
-	return err == nil
+	if !addressBuild {
+		return false
+	}
+	supported.Lock()
+	defer supported.Unlock()
+	if !supported.known || supported.tool != netTool {
+		supported.tool, supported.known, supported.ok = netTool, true, netToolCan(netTool)
+	}
+	return supported.ok
+}
+
+// netToolCan is whether the script at path is the techo5-net that tries fixed addresses.
+func netToolCan(path string) bool {
+	f, err := os.Open(path)
+	if err != nil {
+		return false
+	}
+	defer f.Close()
+	b, _ := io.ReadAll(io.LimitReader(f, 64<<10))
+	return strings.Contains(strings.ReplaceAll(string(b), "\r\n", "\n"), netCaps)
 }
 
 // Address is the setting.
@@ -145,7 +199,7 @@ func ParseAddress(address, gateway, dns string) (Address, error) {
 	case a.Gateway.Equal(a.IP):
 		return Address{}, errors.New("the address and the gateway are the same")
 	}
-	for _, f := range strings.FieldsFunc(dns, func(r rune) bool { return r == ',' || r == ' ' || r == ';' }) {
+	for _, f := range strings.FieldsFunc(dns, func(r rune) bool { return r == ',' || r == ';' || unicode.IsSpace(r) }) {
 		d := ipv4(f)
 		if d == nil {
 			return Address{}, fmt.Errorf("the DNS server %q is not an IPv4 address", f)
@@ -185,33 +239,45 @@ func hostable(ip net.IP) bool {
 // LoadAddress is the setting in use, DHCP when none was made or the file cannot be read. A file missing
 // any of its values reads as DHCP, as techo5-net reads it.
 func LoadAddress() Address {
-	return readAddress(addressFile)
+	a, _ := readAddress(addressFile)
+	return a
 }
 
-func readAddress(path string) Address {
+// readAddress reads a setting file and the network it was set on (hex, as wpa_cli prints the name).
+//
+// It takes exactly what techo5-net's load takes, so the daemon and the script never disagree on whether
+// a fixed address is set: each line trimmed, one pair of quotes off a value, every value in the one
+// form the daemon writes it (192.168.001.050 or a prefix of 024, which a hand edit could leave, are no
+// setting at all to either), and the network's name in lowercase hex. The script's tests hold the two
+// to it (net_script_test.go).
+func readAddress(path string) (Address, string) {
 	b, err := os.ReadFile(path)
 	if err != nil {
-		return Address{}
+		return Address{}, ""
 	}
 	v := map[string]string{}
 	for _, line := range strings.Split(string(b), "\n") {
 		k, val, ok := strings.Cut(strings.TrimSpace(line), "=")
 		if ok && !strings.HasPrefix(k, "#") {
-			v[k] = strings.Trim(val, `"`)
+			v[k] = strings.TrimSuffix(strings.TrimPrefix(val, `"`), `"`)
 		}
 	}
 	if v["MODE"] != "static" || v["ADDRESS"] == "" || v["PREFIX"] == "" || v["GATEWAY"] == "" {
-		return Address{}
+		return Address{}, ""
+	}
+	if strings.Trim(v["SSID"], "0123456789abcdef") != "" {
+		return Address{}, ""
 	}
 	a, err := ParseAddress(v["ADDRESS"]+"/"+v["PREFIX"], v["GATEWAY"], v["DNS"])
-	if err != nil {
-		return Address{}
+	if err != nil || a.IP.String() != v["ADDRESS"] || strconv.Itoa(a.Prefix) != v["PREFIX"] || a.Gateway.String() != v["GATEWAY"] {
+		return Address{}, ""
 	}
-	return a
+	return a, v["SSID"]
 }
 
 // writeCandidate writes a changed setting for techo5-net to try. ssid is the network joined now, in hex
-// of the form wpa_cli prints it: a fixed address is for the network it was set on.
+// of the form wpa_cli prints it: a fixed address is for the network it was set on. Root's alone: it names
+// the network and the address.
 func writeCandidate(a Address, ssid string) error {
 	var b strings.Builder
 	b.WriteString("# How wlan0 gets its address. Written by the TECHO5 daemon (the setup page, the screen\n")
@@ -230,7 +296,8 @@ func writeCandidate(a Address, ssid string) error {
 		return err
 	}
 	tmp := candidate() + ".tmp"
-	if err := os.WriteFile(tmp, []byte(b.String()), 0o644); err != nil {
+	_ = os.Remove(tmp) // WriteFile keeps the mode of a file already there
+	if err := os.WriteFile(tmp, []byte(b.String()), 0o600); err != nil {
 		return err
 	}
 	return os.Rename(tmp, candidate())
@@ -245,53 +312,87 @@ func AddressFallback() string {
 	return strings.TrimSpace(string(b))
 }
 
-// AddressUnchanged is whether a setting is the one in use, which a Save need not try again: an unchanged
-// DHCP setting would otherwise take the device off the network for a new lease, for nothing.
-func AddressUnchanged(a Address) bool {
-	return a.same(LoadAddress())
+// AddressUnchanged is whether a setting is the one in use and in place, which a Save need not try again:
+// an unchanged DHCP setting would otherwise take the device off the network for a new lease, for
+// nothing. A fixed setting is only unchanged while it is what the interface has. Saved again while DHCP
+// stands in for it (on another network than it was set on, after its gateway stopped answering, or with
+// the interface simply at another address), it is tried again: that is the way back to it, and on
+// another network it makes the setting that network's.
+func AddressUnchanged(ctx context.Context, a Address) bool {
+	inUse, ssid := readAddress(addressFile)
+	if !a.same(inUse) {
+		return false
+	}
+	if !a.Fixed {
+		return true
+	}
+	if _, err := os.Stat(sessionFile); err == nil {
+		return false
+	}
+	if now := currentAddress(); now != "" && now != a.IP.String() {
+		return false
+	}
+	if ssid == "" {
+		return true
+	}
+	sctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	now := rawSSID(sctx)
+	return now == "" || hex.EncodeToString([]byte(now)) == ssid
 }
 
 // ChangeAddress tries a setting and keeps it if it works: written as the candidate, tried by techo5-net,
 // made the setting in use only when it passed. It waits for any change already under way. It takes as
 // long as techo5-net's checks and then a lease, up to about a minute. moved is whether the device is
-// now at another address than before; an unchanged setting is not tried at all.
+// now at another address than before; an unchanged setting is not tried at all. A setting tried and not
+// kept is no error: AddressFallback says why.
 func ChangeAddress(ctx context.Context, a Address) (moved bool, err error) {
 	changing.Lock()
 	defer changing.Unlock()
-	if AddressUnchanged(a) {
+	if AddressUnchanged(ctx, a) {
 		return false, nil
 	}
 	if !AddressSupported() {
-		return false, errors.New("wifi: this image cannot set an address (no techo5-net)")
+		return false, errors.New("wifi: this image cannot set an address (no techo5-net that can)")
 	}
-	before := address()
+	before := currentAddress()
 	sctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	ssid := rawSSID(sctx)
 	cancel()
 	if err := writeCandidate(a, hex.EncodeToString([]byte(ssid))); err != nil {
 		return false, err
 	}
-	tctx, cancel := context.WithTimeout(ctx, 2*time.Minute)
+	tctx, cancel := context.WithTimeout(ctx, trialTimeout)
 	defer cancel()
-	out, err := exec.CommandContext(tctx, netTool, "try").CombinedOutput()
+	trialing.Store(true)
+	defer trialing.Store(false)
+	cmd := exec.CommandContext(tctx, netTool, "try")
+	// A child the kill does not reach (a ping, a sleep) would hold the output open: no waiting on it.
+	cmd.WaitDelay = 5 * time.Second
+	out, err := cmd.CombinedOutput()
 	if err != nil {
 		// A trial cut short (the timeout's kill) can leave the untried address on the interface with
 		// the DHCP client stopped: the setting in use goes back on.
 		_ = os.Remove(candidate())
 		uctx, ucancel := context.WithTimeout(context.Background(), time.Minute)
-		if uout, uerr := exec.CommandContext(uctx, netTool, "up").CombinedOutput(); uerr != nil {
+		up := exec.CommandContext(uctx, netTool, "up")
+		up.WaitDelay = 5 * time.Second
+		if uout, uerr := up.CombinedOutput(); uerr != nil {
 			err = fmt.Errorf("%v; putting the setting in use back: %v: %s", err, uerr, strings.TrimSpace(string(uout)))
 		}
 		ucancel()
 		return false, fmt.Errorf("wifi: techo5-net: %v: %s", err, strings.TrimSpace(string(out)))
 	}
 	// A DHCP lease takes a moment to arrive after the client is started.
-	for i := 0; i < 15 && address() == ""; i++ {
-		time.Sleep(time.Second)
+	for i := 0; i < 15 && currentAddress() == ""; i++ {
+		time.Sleep(addressPoll)
 	}
-	now := address()
+	now := currentAddress()
 	return now != "" && now != before, nil
 }
+
+// addressPoll is how often ChangeAddress looks for a lease; a variable for the tests.
+var addressPoll = time.Second
 
 // rawSSID is the network joined now as wpa_cli prints it, escapes and all, which is what techo5-net
 // compares with; empty when not joined.

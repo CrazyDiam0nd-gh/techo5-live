@@ -28,3 +28,6 @@ func TestTheShowHasTheVideoActions(t *testing.T) {
 		}
 	}
 }
+
+// actionsNotOnThisDevice: the Show offers every action the shared code has.
+var actionsNotOnThisDevice = map[string]string{}

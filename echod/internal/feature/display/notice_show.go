@@ -34,11 +34,16 @@ func (d *Display) noticeLights(on, night bool) bool {
 // noticeID is the id of the notification a touch may be waiting on: the card's, or the picture's caption.
 func noticeID() string {
 	id := ""
-	if n, up := notify.Get().Showing(); up {
+	// A picture's is its view's, below: one waiting for a camera somebody is watching to end is not on
+	// the screen yet, and a touch on that camera is not for it.
+	if n, up := notify.Get().Showing(); up && n.Kind == notify.Text {
 		id = n.ID
 	}
 	if v, up := home.Get().Camera(); up && v.Caption != nil && v.Caption.ID != "" {
 		id = v.Caption.ID
+		if v.OverPlain {
+			id = "" // over a camera that was up anyway: not held back (gateCamera), so not waiting for a touch
+		}
 	}
 	return id
 }

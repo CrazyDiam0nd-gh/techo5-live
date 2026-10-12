@@ -28,7 +28,7 @@ func (r *renderer) cameraView(s scene, v home.CameraView) {
 		b := v.Frame.Bounds()
 		x := (r.w - b.Dx()) / 2
 		y := (r.h - b.Dy()) / 2
-		draw.Draw(r.dst, image.Rect(x, y, x+b.Dx(), y+b.Dy()), v.Frame, b.Min, draw.Src)
+		home.ReadFrame(func() { draw.Draw(r.dst, image.Rect(x, y, x+b.Dx(), y+b.Dy()), v.Frame, b.Min, draw.Src) })
 	} else {
 		msg := "Connecting to " + name + "…"
 		if v.Error != "" {

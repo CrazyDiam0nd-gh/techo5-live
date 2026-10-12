@@ -96,10 +96,15 @@ Sets how the device gets its address on Wi-Fi: from the router (DHCP), or fixed.
 seconds later.
 
 A new fixed address is tried before it is kept: if another device answers for it, or the gateway does
-not answer from it, the device keeps the setting it had, and the setup page says why. Calling it with
-the setting already in use changes nothing. Home Assistant follows the device to its new address by
-itself, about two minutes after the change. The device's IP address sensor shows the address in use.
-The action is there only on an image that can set an address.
+not answer from it, the device keeps the setting it had, and the setup page (and the device's log) says
+why. Calling it with the setting already in use, and in place, changes nothing; called while the device
+uses DHCP in its place, it tries the address again. Home Assistant follows the device to its new
+address by itself, about two minutes after the change. The device's IP address sensor shows the address
+in use. The action is on the Echo Show and the Echo Spot, not on the Echo Dot.
+
+Whoever can use the device's ESPHome API can call it, and so can set the gateway and the DNS servers the
+device uses, and with them where its traffic and its name lookups go: keep the API key to the Home
+Assistant you trust.
 
 ### address (Required)
 
@@ -837,6 +842,11 @@ room's music, so a Music Assistant group is not left.
 > Needs `home_assistant` set up first. This action fetches the camera's snapshot from Home
 > Assistant directly. Without it the action still succeeds, but the view shows
 > `hass: no access configured` in place of the picture.
+>
+> With the device's **Live camera video** switch on (off on a new device), a camera Home Assistant can
+> stream is shown as live video decoded on the device, from Home Assistant's stream or the camera's own
+> RTSP address; other cameras, and any whose stream fails, are shown from snapshots, a few a second. See
+> [Cameras](setup.md#4-cameras) for the details.
 
 ### entity (Required)
 
@@ -869,8 +879,11 @@ automation with no opinion about sound should keep calling `home_show_camera`.
 > **Good to know**
 >
 > Everything `home_show_camera` says applies, `home_assistant` included. The sound additionally
-> needs a camera Home Assistant can stream (it plays the camera's stream to this device and
-> converts it on the way, the same way it plays a radio station). A camera that cannot be streamed
+> needs a camera Home Assistant can stream. With **Live camera video** on it is decoded on the device,
+> from the camera's own RTSP address where one is set for talking through it, else from Home
+> Assistant's stream, about as far behind the camera as the picture; with it off, or when neither
+> brings sound, Home Assistant plays the camera's stream to this device and converts it on the way,
+> the same way it plays a radio station, some twenty seconds behind. A camera that cannot be streamed
 > simply stays silent, and the picture is unaffected.
 
 ### entity (Required)
@@ -934,8 +947,8 @@ call each one's action; see [Notifying every device](#notifying-every-device).
 > YAML is a boolean and arrives as `False`; that works, and so does an unquoted `on` (`True`).
 >
 > A Dot has no screen: it chimes, says the words if asked to, fires the events, and shows nothing. With
-> no `seconds`, its notification ends (`expired`) once the chime and the words are done. Night hours and
-> quiet hours keep it quiet.
+> no `seconds`, its notification ends (`expired`) once the chime and the words are done. Quiet hours
+> keep it quiet (a Dot has no night hours of its own).
 
 ### Arguments
 
@@ -949,7 +962,7 @@ call each one's action; see [Notifying every device](#notifying-every-device).
 | `tag` | string | Any text you choose, carried back as `tag` on this notification's events so an automation can tell its notification from others. | No tag (`""` in the events). |
 | `seconds` | integer | How long it stays up, in seconds. At most a day (86400); anything longer is held to a day. | Until somebody taps it, but no longer than 12 hours, then it ends as `expired`. A negative number means the same. On a Dot, until its chime and words are done. |
 
-Emoji aren't drawn: the screen's font has none, so one shows as an empty box. Use `icon` instead.
+Emoji aren't drawn: none of the screen's fonts have them, so one shows as an empty box. Use `icon` instead.
 
 ### What happens
 
@@ -957,6 +970,9 @@ Emoji aren't drawn: the screen's font has none, so one shows as an empty box. Us
   replaced reports `replaced`.
 - **Sound.** The chime plays as it comes up, then the words if `speak` is `"on"`, joined as one
   sentence: title `Doorbell` and message `Someone is here` are said as "Doorbell. Someone is here".
+  A chime that comes while the device is answering or announcing waits for it to finish (up to ten
+  seconds, then it is left out) rather than cutting it off. A camera's sound does not hold it back:
+  the chime plays over it at once.
 - **Night and quiet hours.** No chime, no words and no camera sound, whatever `chime`, `speak` and
   `sound` say. At night a notification does not replace the night screen (on a Show, dark or the red clock; on a
   Spot, dark or dimmed to its night level): it
@@ -977,13 +993,13 @@ comes up, and once more as it goes.
 
 | Field | |
 |---|---|
-| `event` | `shown` as it comes up; then `dismissed` (somebody tapped it), `expired` (its time ran out, or its picture was closed some other way) or `replaced` (a newer notification took its place) |
-| `id` | The notification's own, unique on its device (it starts over after the device restarts, so pair it with `device`) |
+| `event` | `shown` as it comes up; then `dismissed` (somebody tapped it, or its picture's camera page was closed), `expired` (its time ran out) or `replaced` (a newer notification, or a camera put up over its picture, took its place) |
+| `id` | The notification's own, unique on its device: the numbers count up from a random start each time the device starts, so one from before a restart is very unlikely to come again. Pair it with `device` |
 | `tag` | The `tag` the call passed, `""` for none |
 | `kind` | `text` for `notify`, `picture` for `notify_picture` |
 | `title` | The title as shown (clipped), `""` for none |
 | `message` | The message as shown (clipped), `""` for none |
-| `device` | The device's name as Home Assistant shows it (`Kitchen`), not the node in the action's name (`kitchen`) |
+| `device` | The device's own name, as set on the device (`Kitchen`), not the node in the action's name (`kitchen`). A name given to the device in Home Assistant's own settings is not seen by the device, so the event still carries the device's own |
 
 ### Examples
 
@@ -1095,6 +1111,11 @@ its time runs out. It chimes, speaks, replaces and reports exactly as `notify` d
 > the device is playing, the Mute/Unmute control on the page silences it, and words said with
 > `speak: "on"` take the speaker for as long as they last and hand it back. A camera already up with
 > its sound keeps it.
+>
+> A still picture does not take the page from a camera somebody is watching (one put up with
+> `home_show_camera`, or from the screen): it waits for that view to end and comes up then, if its
+> time has not run out meanwhile. A camera picture of the camera already up puts its words over that
+> view without cutting its time short, and is not held back at night, since the camera was up anyway.
 >
 > `speak: "on"` needs **Allow the device to perform Home Assistant actions**, as for `notify`.
 >

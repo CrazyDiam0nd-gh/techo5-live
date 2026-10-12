@@ -25,6 +25,8 @@ type fakePictures struct {
 	sounds []string // each picture's sound argument, as passed
 	onShow func()   // called inside ShowPicture, once the new view is up, with no lock held
 	onHide func()   // called inside HidePicture, once the view is down, with no lock held
+
+	endedID, endedWhy string // the last view that went other than by running out, and how
 }
 
 func (p *fakePictures) ShowPicture(src string, c home.Caption, d time.Duration, sound string) error {
@@ -69,7 +71,29 @@ func (p *fakePictures) HidePicture(id string) bool {
 func (p *fakePictures) HideCamera() {
 	p.mu.Lock()
 	defer p.mu.Unlock()
+	if p.up != "" {
+		p.endedID, p.endedWhy = p.up, "dismissed"
+	}
 	p.up, p.hides = "", p.hides+1
+}
+
+// ShowCamera is a camera with no words put up over the picture: a doorbell's.
+func (p *fakePictures) ShowCamera() {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.up != "" {
+		p.endedID, p.endedWhy = p.up, "replaced"
+	}
+	p.up = ""
+}
+
+func (p *fakePictures) PictureEnded(id string) string {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if id == "" || p.endedID != id {
+		return ""
+	}
+	return p.endedWhy
 }
 
 type rig struct {
@@ -115,6 +139,7 @@ func newRig(t *testing.T, screen bool) *rig {
 		pics = r.pics
 	}
 	r.f = newFeature(pics)
+	r.f.seq = 0 // numbered from 1, so the tests can name them
 	r.f.now = func() time.Time { return r.now }
 	r.f.chime = func() { r.chimes.Add(1) }
 	r.f.say = func(words string) {
@@ -378,8 +403,43 @@ func TestAPictureIsOverWhenItsViewIs(t *testing.T) {
 	if _, up := r.f.Showing(); up {
 		t.Error("still up with its view gone")
 	}
-	if got := r.fired(); !same(got, []string{"shown", "expired"}) {
+	if got := r.fired(); !same(got, []string{"shown", "dismissed"}) {
 		t.Errorf("events %v", got)
+	}
+}
+
+// How a picture's view went is what its notification is reported as: replaced by a doorbell's camera,
+// dismissed by the camera page closing, expired only when it ran out.
+func TestAPictureIsReportedAsItsViewWent(t *testing.T) {
+	cases := []struct {
+		end  func(*fakePictures)
+		want string
+	}{
+		{(*fakePictures).ShowCamera, "replaced"},
+		{(*fakePictures).HideCamera, "dismissed"},
+		{func(p *fakePictures) { p.mu.Lock(); p.up = ""; p.mu.Unlock() }, "expired"},
+	}
+	for _, c := range cases {
+		r := newRig(t, true)
+		_ = r.f.NotifyPicture("m", "", "/local/door.png", "", "", "", "", 0)
+		c.end(r.pics)
+		r.f.tick(r.now.Add(time.Second))
+		if got := r.fired(); !same(got, []string{"shown", c.want}) {
+			t.Errorf("events %v, want shown then %s", got, c.want)
+		}
+	}
+}
+
+// Notification numbers do not start again at 1 after a restart: an automation still waiting on one
+// from before must not take a new one for it.
+func TestNotificationNumbersDoNotRestartAtOne(t *testing.T) {
+	seen := map[string]bool{}
+	for range 5 {
+		id := newFeature(nil).nextID()
+		seen[id] = true
+	}
+	if len(seen) < 4 {
+		t.Errorf("five fresh starts gave the ids %v: they start at the same number", seen)
 	}
 }
 
@@ -793,7 +853,7 @@ func TestShowingAgreesWithTickForAPicture(t *testing.T) {
 		t.Error("Showing says a picture is up with its view gone")
 	}
 	r.f.tick(r.now)
-	if got := r.fired(); !same(got, []string{"shown", "expired"}) {
+	if got := r.fired(); !same(got, []string{"shown", "dismissed"}) {
 		t.Errorf("events %v", got)
 	}
 	// And the other way: a picture whose view outlasts its own Until (the view's time counts from the

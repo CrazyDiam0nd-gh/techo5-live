@@ -158,7 +158,7 @@ func categoryRows(sv sheetView) (rows []settingRow, note string) {
 			{label: "Voice", kind: ctlHeading},
 			{id: "mic", label: "Microphone", sub: "The mute button does this too", kind: ctlToggle, on: !st.muted, value: mic},
 			{id: "wakeword", label: "Wake word", kind: ctlChoice, value: st.wakeWord},
-			{id: "wakesens", label: "Wake word sensitivity", sub: "Higher wakes by mistake less often", kind: ctlStepper,
+			{id: "wakesens", label: "Wake word threshold", sub: "Higher wakes by mistake less often", kind: ctlStepper,
 				value: fmt.Sprintf("%.2f", config.Get().Wake.Slot(0).Threshold)},
 			{id: "waketone", label: "Wake sound", kind: ctlChoice, value: config.Get().Wake.Slot(0).Tone.Label()},
 			voiceRow(),

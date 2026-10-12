@@ -834,6 +834,9 @@ func (d *Display) gesture(g touch.Gesture) {
 		d.releaseNotice()
 		if g.Kind == touch.Tap {
 			d.apply(true, d.ceilingOrDefault(), true)
+			if held {
+				return // the touch only releases the notification: it is what the screen lights up to
+			}
 			if nightNow(time.Now()) && nightTapOpensDashboard() && !d.overNight() {
 				d.openNightDashboard() // a light to turn on in the night, say: as a tap on the clock would
 			}
@@ -864,9 +867,13 @@ func (d *Display) gesture(g touch.Gesture) {
 			return
 		}
 		if held {
+			// Only released, by a tap or a long press alike: the night light stays, with the notification
+			// on it.
 			d.releaseNotice()
 			d.wake()
-		} else if g.Kind == touch.Tap {
+			return
+		}
+		if g.Kind == touch.Tap {
 			// What a touch released on the night light is tapped away like any other, and the red clock
 			// comes back; without this it stayed until the notification ended. A text card only by its
 			// own box; a camera view (a picture notification's, or one somebody asked for) as by day, where
@@ -2306,6 +2313,9 @@ func (d *Display) frame() time.Duration {
 
 	if d.r.flipBusy(time.Now()) {
 		return flipFrame // a card is flipping: the night's flip clock, or the Flip clock style
+	}
+	if s.showCamera && stillOnly(s.camera) {
+		return time.Until(time.Now().Truncate(idleFrame).Add(idleFrame)) // its picture arriving wakes the loop itself
 	}
 	if s.showCamera {
 		return 250 * time.Millisecond // frames arrive as they are fetched; this keeps up

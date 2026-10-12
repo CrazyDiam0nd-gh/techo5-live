@@ -9,6 +9,7 @@ package fonts
 
 import (
 	"embed"
+	"errors"
 	"fmt"
 	"path"
 	"sync"
@@ -175,16 +176,30 @@ func Face(value string, bold bool, size float64) (font.Face, error) {
 		layers = append(layers, Layer{Face: face, Font: f[w]})
 	}
 	layers = append(layers, Layer{Face: goFace, Font: goFonts[w]})
-	for _, f := range ownFonts() {
+	for _, e := range ownFonts() {
 		// One weight each: a font of that kind is too big to keep two of.
-		face, err := opentype.NewFace(f, &opentype.FaceOptions{Size: size, DPI: 72, Hinting: font.HintingFull})
+		face, err := ownFace(e.font, size)
 		if err != nil {
 			continue
 		}
-		layers = append(layers, Layer{Face: face, Font: f})
+		f := e.font
+		layers = append(layers, Layer{Face: face, Font: f, Broke: func(why string) { markBad(f, why) }})
 	}
 	if len(layers) == 1 {
 		return goFace, nil
 	}
 	return NewStack(goFace, layers...), nil
+}
+
+// ownFace is a face of one of the owner's own fonts at size; should making it panic (a broken file),
+// the font is no longer used (markBad).
+func ownFace(f *sfnt.Font, size float64) (face font.Face, err error) {
+	defer func() {
+		if p := recover(); p != nil {
+			why := fmt.Sprint(p)
+			markBad(f, why)
+			face, err = nil, errors.New(why)
+		}
+	}()
+	return opentype.NewFace(f, &opentype.FaceOptions{Size: size, DPI: 72, Hinting: font.HintingFull})
 }

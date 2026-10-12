@@ -11,6 +11,7 @@ import (
 	"context"
 	"errors"
 	"log/slog"
+	"math/rand/v2"
 	"strconv"
 	"strings"
 	"sync"
@@ -78,6 +79,10 @@ type pictures interface {
 	ShowPicture(src string, c home.Caption, d time.Duration, sound string) error
 	PictureUp(id string) bool
 	HidePicture(id string) bool
+	// PictureEnded is why notification id's view went other than by its time running out: "replaced"
+	// (another camera or picture took the page), "dismissed" (a tap, or the camera page closed), or ""
+	// (it ran out, or is still up).
+	PictureEnded(id string) string
 }
 
 type Feature struct {
@@ -146,6 +151,9 @@ func hushedNow() bool {
 
 func newFeature(pics pictures) *Feature {
 	f := &Feature{
+		// Numbers start at random rather than at 1: an automation waiting on a notification's id from
+		// before a restart must not match a new one that was given the same number.
+		seq:    rand.IntN(1_000_000_000),
 		now:    time.Now,
 		pics:   pics,
 		chime:  Chime,
@@ -300,8 +308,10 @@ func (f *Feature) put(n Notification, h how) {
 	if h.aloud && !h.hushed {
 		words = spoken(n)
 	}
-	slog.Info("notification", "kind", n.Kind, "title", n.Title, "until", n.Until.Format(time.Kitchen),
+	// Its words only at Debug: logs go into diagnostics bundles, which get pasted into public issues.
+	slog.Info("notification", "id", n.ID, "kind", n.Kind, "until", n.Until.Format(time.Kitchen),
 		"chime", chime, "spoken", words != "", "hushed", h.hushed)
+	slog.Debug("notification words", "id", n.ID, "title", n.Title, "message", n.Message)
 	ends := h.untilDone && f.pics == nil
 	if chime || words != "" {
 		// One after the other in one goroutine: the chime has the speaker until it is done, and words
@@ -415,16 +425,19 @@ func (f *Feature) tick(now time.Time) {
 		f.mu.Unlock()
 		return
 	}
-	over := !now.Before(n.Until)
+	over, why := !now.Before(n.Until), "expired"
 	if n.Kind == Picture && f.pics != nil {
 		over = !f.pics.PictureUp(n.ID)
+		if w := f.pics.PictureEnded(n.ID); over && w != "" {
+			why = w // a doorbell's camera took the page, or the camera page was closed
+		}
 	}
 	if !over {
 		f.mu.Unlock()
 		return
 	}
 	f.up = nil
-	f.report(*n, "expired")
+	f.report(*n, why)
 	f.mu.Unlock()
 	f.Changed.Emit(struct{}{})
 }

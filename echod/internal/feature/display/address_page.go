@@ -277,28 +277,30 @@ func (d *Display) saveAddress() {
 		d.mu.Unlock()
 		return
 	}
-	if wifi.AddressUnchanged(a) {
-		f.note = "Nothing changed: that is the setting in use."
-		d.mu.Unlock()
-		return
-	}
 	f.busy, f.note = "Trying "+a.String()+"…", ""
 	d.mu.Unlock()
 	d.wake()
-	slog.Info("network address set on the screen", "address", a.String())
 	safe.Go("network address", func() {
-		moved, err := wifi.ChangeAddress(context.Background(), a)
-		note := ""
-		switch why := wifi.AddressFallback(); {
-		case err != nil:
-			note = "Could not be applied: " + err.Error()
-			slog.Warn("the network address could not be applied", "err", err)
-		case why != "":
-			note = "Not kept: " + why
-		case moved:
-			note = "Now at " + address() + ". Home Assistant follows within about two minutes."
-		default:
-			note = "Saved. The address is " + address() + "."
+		// Whether it is the setting in place asks the supplicant which network this is, which can take
+		// seconds: here, not on the touch.
+		var note string
+		if wifi.AddressUnchanged(context.Background(), a) {
+			note = "Nothing changed: that is the setting in use."
+		} else {
+			slog.Info("network address set on the screen", "address", a.String())
+			moved, err := wifi.ChangeAddress(context.Background(), a)
+			switch why := wifi.AddressFallback(); {
+			case err != nil:
+				note = "Could not be applied: " + err.Error()
+				slog.Warn("the network address could not be applied", "err", err)
+			case why != "":
+				note = "Not kept: " + why
+				slog.Warn("the network address set on the screen was not kept", "address", a.String(), "reason", why)
+			case moved:
+				note = "Now at " + address() + ". Home Assistant follows within about two minutes."
+			default:
+				note = "Saved. The address is " + address() + "."
+			}
 		}
 		d.mu.Lock()
 		if d.wifi.addr == f {

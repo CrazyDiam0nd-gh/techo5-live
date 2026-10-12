@@ -34,14 +34,38 @@ func useHomeAssistant(t *testing.T, srv *httptest.Server) {
 
 // slowHA is Home Assistant serving a picture only when told to: door.png as a still and
 // camera.front_door as a snapshot. A request waits for release (closed to let every one through),
-// and the server counts the requests it has had and the most it has had in flight at once.
+// and the server counts the requests it has had and the most it has had in flight at once. A request
+// the device gave up on is in flight here until the server notices the connection closed, a moment
+// after the device let go of it, so served keeps the span of each request that was served, the ones a
+// test of "one at a time" goes by.
 type slowHA struct {
+	mu      sync.Mutex
+	served  []servedSpan
 	release chan struct{}
 	open    *sync.Once // lets release be closed by the test and by the cleanup
 	started atomic.Int32
 	hits    atomic.Int32
 	live    atomic.Int32
 	most    atomic.Int32
+}
+
+type servedSpan struct{ start, end time.Time }
+
+// mostServed is the most requests that were served (not given up on) in flight at once.
+func (s *slowHA) mostServed() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	most := 0
+	for _, a := range s.served {
+		n := 0
+		for _, b := range s.served {
+			if !b.start.After(a.start) && b.end.After(a.start) {
+				n++
+			}
+		}
+		most = max(most, n)
+	}
+	return most
 }
 
 func newSlowHA(t *testing.T) *slowHA {
@@ -69,6 +93,7 @@ func newSlowHA(t *testing.T) *slowHA {
 			return
 		}
 		s.started.Add(1)
+		start := time.Now()
 		n := s.live.Add(1)
 		defer s.live.Add(-1)
 		for {
@@ -84,6 +109,9 @@ func newSlowHA(t *testing.T) *slowHA {
 		}
 		s.hits.Add(1)
 		_, _ = w.Write(body)
+		s.mu.Lock()
+		s.served = append(s.served, servedSpan{start, time.Now()})
+		s.mu.Unlock()
 	}))
 	t.Cleanup(srv.Close)
 	// Cleanups run last in, first out: a request still waiting is let go before the server is closed,
@@ -171,7 +199,7 @@ func TestABurstOfStillsIsFetchedOneAtATime(t *testing.T) {
 	ha.open.Do(func() { close(ha.release) })
 	eventually(t, "the last picture", func() bool { v, _ := f.Camera(); return v.Frame != nil && v.Caption.ID == "5" })
 	time.Sleep(200 * time.Millisecond) // long enough for a stale fetch to start, were one going to
-	if m := ha.most.Load(); m != 1 {
+	if m := ha.mostServed(); m != 1 {
 		t.Errorf("%d fetches in flight at once, want 1", m)
 	}
 	if n := ha.started.Load(); n > 2 {

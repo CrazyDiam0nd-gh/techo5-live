@@ -217,11 +217,11 @@ func TestTheSliderMovesTheDeviceByWhatItMoved(t *testing.T) {
 		{32768, true, 0}, // a reconnect at half
 		{39321, false, 3},
 	} {
-		if by := s.moved(c.v, c.connecting); by != c.by {
+		if by := s.moved(c.v, c.connecting, time.Unix(int64(1000+10*i), 0)); by != c.by {
 			t.Errorf("%d: moved %d, want %d", i, by, c.by)
 		}
 	}
-	if by := (&slider{last: -1}).moved(30000, false); by != 0 {
+	if by := (&slider{last: -1}).moved(30000, false, time.Now()); by != 0 {
 		t.Errorf("the first level ever heard moved %d", by)
 	}
 }
@@ -257,13 +257,14 @@ func TestEveryStepGoesToTheAppAndBack(t *testing.T) {
 // fakeSpotify is a device and a librespot around a spotifySync: what librespot was handed, and the
 // device's level, set the way media.Player sets it, which tells the sync as OnLevel does.
 type fakeSpotify struct {
-	s     *spotifySync
-	step  int
-	told  []int // levels handed to librespot
-	sets  []int // levels the app set the device to
-	takes bool  // whether librespot takes what it is handed
-	night int   // the night volume in quiet hours, 0 for none
-	clock time.Time
+	s      *spotifySync
+	step   int
+	told   []int // levels handed to librespot
+	sets   []int // levels the app set the device to
+	takes  bool  // whether librespot takes what it is handed
+	night  int   // the night volume in quiet hours, 0 for none
+	clock  time.Time
+	settle func() // the settle to come, nil for none
 }
 
 func newFakeSpotify(step int) *fakeSpotify {
@@ -287,6 +288,13 @@ func newFakeSpotify(step int) *fakeSpotify {
 		return to
 	}
 	s.now = func() time.Time { return f.clock }
+	s.after = func(d time.Duration, fn func()) func() bool {
+		if d != settleAfter {
+			panic("not the settle")
+		}
+		f.settle = fn
+		return func() bool { f.settle = nil; return true }
+	}
 	f.s = s
 	return f
 }
@@ -882,4 +890,210 @@ func waitUntil(t *testing.T, ok func() bool) {
 		}
 	}
 	t.Fatal("timed out")
+}
+
+// A librespot that crashed never said its phone went. Started again, it has none: a volume it says
+// before the next phone's connect line is only where it was left, not a move of the slider.
+func TestARestartedLibrespotHasNoPhone(t *testing.T) {
+	f := newFakeSpotify(8)
+	f.s.session(true)
+	f.later(time.Minute)
+	f.s.started() // crashed and started again
+	f.later(time.Minute)
+	f.s.heard(spotifyFull, false) // the next phone's connect, its volume line first
+	f.s.session(true)
+	f.s.heard(spotifyFull, true)
+	if len(f.sets) != 0 || f.step != 8 {
+		t.Errorf("the device went to %v", f.sets)
+	}
+	if f.told[len(f.told)-1] != spotifyValue(8) {
+		t.Errorf("the app was not told the device's level: %v", f.told)
+	}
+}
+
+// librespot skips saying a phone went when telling Spotify fails, so the device can think one is still
+// connected when the next connects. A volume heard just before that connect's line was the connect's:
+// it is taken back, and the app told the device's level.
+func TestAVolumeJustBeforeAConnectIsTakenBack(t *testing.T) {
+	f := newFakeSpotify(8)
+	f.s.session(true)
+	f.later(time.Minute) // the phone goes, unsaid; another connects
+	f.s.heard(spotifyFull, false)
+	f.later(100 * time.Millisecond)
+	f.told = nil
+	f.s.session(true)
+	if f.step != 8 || !slices.Equal(f.sets, []int{30, 8}) {
+		t.Errorf("the device is at %d after %v, want back at 8", f.step, f.sets)
+	}
+	if len(f.told) == 0 || f.told[len(f.told)-1] != spotifyValue(8) {
+		t.Errorf("told %v", f.told)
+	}
+	// A move long before a connect is the slider's, and stays.
+	f.later(time.Minute)
+	f.s.heard(spotifyValue(20), false)
+	f.later(time.Minute)
+	f.s.session(true)
+	if f.step != 20 {
+		t.Errorf("a move a minute before a connect was taken back: at %d", f.step)
+	}
+}
+
+// Each level handed to librespot is let by once when it comes back: the same level heard again soon
+// after is a move of the slider, back to where it was.
+func TestAnEchoIsLetByOnce(t *testing.T) {
+	f := newFakeSpotify(10)
+	f.s.session(true)
+	f.later(5 * time.Second)
+	f.press(11)
+	f.s.heard(spotifyValue(11), false) // librespot saying it back
+	f.press(12)
+	f.s.heard(spotifyValue(12), false)
+	f.later(time.Second)
+	f.s.heard(spotifyValue(11), false) // the slider dragged back to 11
+	if !slices.Equal(f.sets, []int{11}) || f.step != 11 {
+		t.Errorf("the slider's 11 was taken as an echo: set %v", f.sets)
+	}
+}
+
+// librespot's lines can come in another order than it said them: a level the device handed it and a
+// drag of the slider crossing leave the app at the device's old level and the device at the slider's.
+// Once the slider is still, the device's level is handed to librespot again, so the two agree.
+func TestTheSliderSettlesOnTheDevicesLevel(t *testing.T) {
+	f := newFakeSpotify(10)
+	f.s.session(true)
+	f.later(5 * time.Second)
+	f.press(12)                        // a button; librespot takes it after the drag below
+	f.s.heard(spotifyValue(15), false) // the drag
+	f.s.heard(spotifyValue(12), false) // the button's level, said last: the app shows 12
+	if f.step != 15 {
+		t.Fatalf("the device is at %d", f.step)
+	}
+	if f.settle == nil {
+		t.Fatal("no settle after the drag")
+	}
+	f.told = nil
+	f.settle()
+	if !slices.Equal(f.told, values(15)) {
+		t.Errorf("settling told librespot %v, want the device's 15", f.told)
+	}
+	// Its echo is let by, and settles nothing more.
+	f.settle = nil
+	f.s.heard(spotifyValue(15), false)
+	if f.settle != nil || f.step != 15 {
+		t.Error("the settle's own echo started another")
+	}
+	// A restart stops a settle to come.
+	f.s.heard(spotifyValue(20), false)
+	f.s.started()
+	if f.settle != nil {
+		t.Error("a restart left a settle to come")
+	}
+}
+
+// A settle that hands librespot the level it said last is not said back (librespot says a volume only
+// when it changes), so it is not waited for as an echo: the slider dragged away and back to its end
+// within moments moves the device back there.
+func TestASettleLibrespotHasAlreadyIsNotWaitedFor(t *testing.T) {
+	f := newFakeSpotify(20)
+	f.s.session(true)
+	f.later(5 * time.Second)
+	f.s.heard(spotifyFull, false) // the slider to the top
+	if f.step != 30 || f.settle == nil {
+		t.Fatalf("the device is at %d, settle %v", f.step, f.settle != nil)
+	}
+	f.settle()
+	f.later(time.Second)
+	f.s.heard(spotifyValue(20), false)
+	f.s.heard(spotifyFull, false) // and back to the top
+	if !slices.Equal(f.sets, []int{30, 20, 30}) || f.step != 30 {
+		t.Errorf("set %v and at %d: the slider's return to the top was taken for the settle's echo", f.sets, f.step)
+	}
+	// Should librespot say the settle's level after all, it is the device's own and moves nothing.
+	f.settle = nil
+	f.s.heard(spotifyFull, false)
+	if !slices.Equal(f.sets, []int{30, 20, 30}) {
+		t.Errorf("an unexpected echo moved the device: set %v", f.sets)
+	}
+}
+
+// With an older librespot the slider moves the device by steps: a restart, or a phone connecting or
+// going, starts it afresh, and a move heard just before a connect is taken back.
+func TestTheFallbackSliderAcrossSessions(t *testing.T) {
+	step := 8
+	device := func() int { return step }
+	set := func(s int) { step = s }
+	a := &spotifyFallback{slider: slider{last: -1}}
+	a.session(true, device, set)
+	a.heard(32768, true, device, set)
+	a.heard(39321, false, device, set) // 15 to 18
+	if step != 11 {
+		t.Fatalf("at %d, want 11", step)
+	}
+	a.started() // crashed; the next phone's volume comes before its connect
+	a.heard(65535, false, device, set)
+	if step != 11 {
+		t.Errorf("the first level after a restart moved the device to %d", step)
+	}
+	// A phone going unsaid, then a level and a connect.
+	a.heard(32768, false, device, set) // 30 to 15: -15
+	a.session(true, device, set)
+	if step != 11 {
+		t.Errorf("a move just before a connect was kept: at %d", step)
+	}
+}
+
+// librespot's arguments: with a volume pipe it takes the device's volume from it and sends the audio
+// unscaled, with nothing for the pump to undo; without one it starts at full and scales linearly,
+// which the pump undoes.
+func TestSpotifyArgs(t *testing.T) {
+	args, lv := spotifyArgs("Kitchen", "/c", "/s", "/run/v")
+	j := strings.Join(args, " ")
+	if lv != nil || !strings.Contains(j, "--volume-fifo /run/v") || strings.Contains(j, "--initial-volume") || strings.Contains(j, "--volume-ctrl") {
+		t.Errorf("with the pipe: %v, level %v", args, lv)
+	}
+	args, lv = spotifyArgs("Kitchen", "/c", "/s", "")
+	j = strings.Join(args, " ")
+	if lv != spotifyLevel || strings.Contains(j, "--volume-fifo") || !strings.Contains(j, "--initial-volume 100 --volume-ctrl linear") {
+		t.Errorf("without: %v, level %v", args, lv)
+	}
+	if !strings.Contains(j, "--name Kitchen") || !strings.Contains(j, "--onevent /s") || !strings.Contains(j, "--cache /c") {
+		t.Errorf("args %v", args)
+	}
+}
+
+// The volume pipe is made only for a librespot that takes volumes; one that cannot be made is none,
+// and librespot is started without it.
+func TestTheSpotifyVolumePipe(t *testing.T) {
+	was := librespotTakesVolume
+	t.Cleanup(func() { librespotTakesVolume = was })
+	dir := t.TempDir()
+	librespotTakesVolume = func() bool { return false }
+	if p := spotifyVolumePipe(dir, nil); p != "" {
+		t.Errorf("an older librespot was given %q", p)
+	}
+	librespotTakesVolume = func() bool { return true }
+	p := spotifyVolumePipe(dir, nil)
+	if st, err := os.Stat(p); p == "" || err != nil || st.Mode()&os.ModeNamedPipe == 0 {
+		t.Errorf("the pipe %q: %v", p, err)
+	}
+	if p := spotifyVolumePipe(filepath.Join(dir, "missing"), nil); p != "" {
+		t.Errorf("a pipe that could not be made is %q", p)
+	}
+}
+
+// supervise says each time it is about to start the program, the first time and every time after.
+func TestSuperviseSaysEachStart(t *testing.T) {
+	was := restartFirst
+	restartFirst = 20 * time.Millisecond
+	t.Cleanup(func() { restartFirst = was })
+	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
+	defer cancel()
+	runs := filepath.Join(t.TempDir(), "runs")
+	starts := 0
+	supervise(ctx, program{name: "test", path: "/bin/sh", args: []string{"-c", "echo x >> " + runs + "; exit 1"},
+		started: func() { starts++ }})
+	b, _ := os.ReadFile(runs)
+	if n := strings.Count(string(b), "x"); starts < 2 || starts < n {
+		t.Errorf("started %d times, said %d", n, starts)
+	}
 }

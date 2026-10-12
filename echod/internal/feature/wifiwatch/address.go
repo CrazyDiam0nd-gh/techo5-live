@@ -1,3 +1,5 @@
+//go:build !dot
+
 package wifiwatch
 
 import (
@@ -18,13 +20,19 @@ var applyAfter = 2 * time.Second
 // Actions: network_address sets how the device gets its address (lib/wifi/address.go). An empty address
 // is DHCP, and the gateway and name servers are then ignored; otherwise the address, with or without its
 // prefix, the gateway, and name servers if not the gateway. A new fixed address that does not work is
-// dropped by the device itself, which keeps the setting in use. Not offered on an image without
-// techo5-net, which could save a setting but never try it.
+// dropped by the device itself, which keeps the setting in use. Not offered where the image has no
+// techo5-net that can try one, and not built for the Echo Dot at all, whose image has a techo5-net of
+// its own that does something else (wifi.AddressSupported).
 func (w *Watch) Actions() []*esphome.Action {
 	if !wifi.Available() || !wifi.AddressSupported() {
 		return nil
 	}
-	return []*esphome.Action{{
+	return []*esphome.Action{networkAddressAction()}
+}
+
+// networkAddressAction is the action itself, whatever the device has.
+func networkAddressAction() *esphome.Action {
+	return &esphome.Action{
 		Name: "network_address",
 		Args: []esphome.Arg{
 			{Name: "address", Type: esphome.ArgString},
@@ -36,17 +44,27 @@ func (w *Watch) Actions() []*esphome.Action {
 			if err != nil {
 				return nil, err
 			}
-			if wifi.AddressUnchanged(a) {
-				return nil, nil // the setting in use: nothing to try
+			if wifi.AddressUnchanged(context.Background(), a) {
+				return nil, nil // the setting in use, and in place: nothing to try
 			}
 			slog.Info("network address set from Home Assistant", "address", a.String())
 			safe.Go("network address", func() {
 				time.Sleep(applyAfter)
-				if _, err := wifi.ChangeAddress(context.Background(), a); err != nil {
-					slog.Warn("the network address could not be applied", "err", err)
-				}
+				changeAddress(a)
 			})
 			return nil, nil
 		},
-	}}
+	}
+}
+
+// changeAddress tries a setting from the action and says in the log how it went: the action has
+// answered long before, so a setting tried and not kept would otherwise go unnoticed.
+func changeAddress(a wifi.Address) {
+	if _, err := wifi.ChangeAddress(context.Background(), a); err != nil {
+		slog.Warn("the network address could not be applied", "err", err)
+		return
+	}
+	if why := wifi.AddressFallback(); why != "" {
+		slog.Warn("the network address from Home Assistant was not kept", "address", a.String(), "reason", why)
+	}
 }

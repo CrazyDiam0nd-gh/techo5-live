@@ -46,10 +46,16 @@ func (d *Display) releaseNotice() {
 }
 
 // gateCamera holds back a picture notification's camera page at night until a touch has released it.
-// A camera view somebody asked for is not held.
+// A camera view somebody asked for is not held, nor a notification's picture put over one (OverPlain):
+// holding it back would take the camera from whoever was watching it.
 func (d *Display) gateCamera(v home.CameraView, up, night bool) (home.CameraView, bool) {
-	if up && v.Caption != nil && !d.noticeOut(v.Caption.ID, night) {
+	if up && v.Caption != nil && !v.OverPlain && !d.noticeOut(v.Caption.ID, night) {
 		return home.CameraView{}, false
 	}
 	return v, up
 }
+
+// stillOnly is whether a camera view is a notification's still picture: nothing on it moves but its
+// countdown, so it is redrawn as a static page is, once a second, rather than at a camera's pace. A
+// still with no time stays up to twelve hours.
+func stillOnly(v home.CameraView) bool { return v.Caption != nil && !home.PictureIsLive(v.Entity) }

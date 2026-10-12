@@ -259,9 +259,9 @@ func networkID(ctx context.Context, ssid string) (string, error) {
 
 // renewLease gets the address on the new network: through techo5-net when the setting is a fixed
 // address (address.go), which decides whether it holds there; otherwise by poking udhcpc for a lease,
-// as always.
+// as always. Never through a techo5-net that is not the one that knows fixed addresses (AddressSupported).
 func renewLease() {
-	if _, err := os.Stat(netTool); err == nil && LoadAddress().Fixed {
+	if AddressSupported() && LoadAddress().Fixed {
 		ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
 		defer cancel()
 		if out, err := exec.CommandContext(ctx, netTool, "renew").CombinedOutput(); err != nil {

@@ -168,13 +168,23 @@ func (v *Voice) HomeAssistant() bool { return v.vs.Subscribed() }
 // A wake word said over a ringing alarm or timer silences it first, the way a button press does:
 // whoever says it at a ringing alarm wants it quiet, and should not have to know the one word that
 // stops it. The turn goes on, over a quiet room, and "stop" in it ends the ring (see stopsRing).
-func (v *Voice) Start(slot int) {
+func (v *Voice) Start(slot int) { v.open(slot, false) }
+
+// Woke is Start for the wake word itself, which is the one way a turn can be opened by mistake: by a
+// sound that was not the word (see Mistaken).
+func (v *Voice) Woke(slot int) { v.open(slot, true) }
+
+func (v *Voice) open(slot int, woke bool) {
 	if micTaken() {
 		slog.Info("wake word while the microphones are talking through a camera, ignored")
 		return
 	}
 	if ring.IsSounding() && ring.Silence() {
 		slog.Info("wake word over a ring, silencing it")
+	}
+	if woke {
+		v.turn.Woke(slot)
+		return
 	}
 	v.turn.Start(slot)
 }

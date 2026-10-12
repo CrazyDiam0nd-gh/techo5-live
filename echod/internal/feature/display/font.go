@@ -148,11 +148,24 @@ func facesFor(k fontKey) sheetFaces {
 		return f
 	}
 	f := sheetFacesAt(k.name, func(n int) int { return n })
-	if sheetFaceCache.faces == nil || len(sheetFaceCache.faces) >= keptFonts {
-		sheetFaceCache.faces = map[fontKey]sheetFaces{}
-	}
+	sheetFaceCache.faces = roomFor(sheetFaceCache.faces, k)
 	sheetFaceCache.faces[k] = f
 	return f
+}
+
+// roomFor makes room in a cache of faces for k's: faces made with the owner's own fonts as they were
+// before (another generation) go at once, so a font of one's own that was removed or replaced is not
+// kept open by them, and the rest once keptFonts fonts' faces are kept.
+func roomFor[V any](m map[fontKey]V, k fontKey) map[fontKey]V {
+	if m == nil || len(m) >= keptFonts {
+		return map[fontKey]V{}
+	}
+	for old := range m {
+		if old.gen != k.gen {
+			delete(m, old)
+		}
+	}
+	return m
 }
 
 // fontChanged is whether the screen font, or the owner's own fonts, have changed since a paint's

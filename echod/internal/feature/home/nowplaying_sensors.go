@@ -283,8 +283,9 @@ func (f *Feature) nowPlayingLoop(ctx context.Context) {
 		s := takeSnapshot(f)
 		next := nowPlayingOf(s).cut()
 		if f.showNowPlaying(&last, next) > 0 {
-			slog.Info("home: now playing sensors", "source", next.source, "title", next.title, "artist", next.artist,
-				"album", next.album, "state", next.state)
+			// What is playing only at Debug: a log pasted into an issue should not be a listening history.
+			slog.Info("home: now playing sensors", "source", next.source, "state", next.state)
+			slog.Debug("home: now playing", "title", next.title, "artist", next.artist, "album", next.album)
 		}
 		if recheck != nil {
 			recheck.Stop()

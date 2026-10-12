@@ -52,7 +52,7 @@ func (r *roundRenderer) cameraView(s roundScene) {
 	r.clear()
 	v := s.camera
 	if f := v.Frame; f != nil {
-		r.coverCircle(f, v.Entity == home.LocalCamera)
+		home.ReadFrame(func() { r.coverCircle(f, v.Entity == home.LocalCamera) })
 	} else {
 		msg := "Connecting…"
 		if v.Error != "" {

@@ -1512,6 +1512,8 @@ func (d *Display) frame() time.Duration {
 	switch {
 	case turning || (s.menuOpen && d.isSpinning()):
 		return dialFrame
+	case s.showCamera && stillOnly(s.camera):
+		return time.Until(now.Truncate(idleFrame).Add(idleFrame)) // a still: its picture arriving wakes the loop
 	case s.showCamera:
 		// New frames wake the loop themselves; this only brings the view down when its time is up.
 		return activeFrame

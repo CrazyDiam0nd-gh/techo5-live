@@ -159,7 +159,7 @@ func adaptRows(rows []settingRow, sv sheetView) []settingRow {
 		case row.id == "lyrics":
 			continue // the words need the Show's page; the round face has room for the song alone
 		case row.id == "wakesens":
-			row.label = "Sensitivity"
+			row.label = "Threshold"
 		case row.id == "output":
 			row.sub = "With headphones in"
 		case row.id == "sendspin":
@@ -224,9 +224,7 @@ func spotFaces(k fontKey) *sheetFaces {
 		header: f(true, 30), label: f(false, 24), labelBold: f(true, 24), sub: f(false, 16),
 		value: f(false, 20), nav: f(false, 20), navBold: f(true, 20), button: f(true, 19),
 	}
-	if spotFaceCache.faces == nil || len(spotFaceCache.faces) >= keptFonts {
-		spotFaceCache.faces = map[fontKey]*sheetFaces{}
-	}
+	spotFaceCache.faces = roomFor(spotFaceCache.faces, k)
 	spotFaceCache.faces[k] = fc
 	return fc
 }

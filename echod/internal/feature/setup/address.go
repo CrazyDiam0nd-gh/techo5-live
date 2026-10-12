@@ -1,3 +1,5 @@
+//go:build !dot
+
 package setup
 
 import (
@@ -18,7 +20,8 @@ import (
 // addressSection is how the device gets its address on the network: from the router's DHCP, as every
 // device starts, or fixed. A new fixed address that does not work, taken by another device or with a
 // gateway that does not answer from it, is dropped and the setting in use kept, and this says why.
-// Not offered on an image without techo5-net, which could save a setting but never try it.
+// Not offered on an image without the techo5-net that tries one, which could save a setting but never
+// try it, and not built for the Echo Dot (address_dot.go).
 func addressSection(w http.ResponseWriter, token string) {
 	if !wifi.Available() || !wifi.AddressSupported() {
 		return
@@ -54,8 +57,10 @@ func addressSection(w http.ResponseWriter, token string) {
 	  again. A new fixed address is tried first: if another device has it, or the gateway does not answer
 	  from it, the device keeps the setting it had and says why here. Once kept, it is used as it is after
 	  every restart, on the Wi-Fi it was set on; on another network, or when its gateway stays silent for five
-	  minutes, the device takes an address from the router until it restarts. Home Assistant follows the
-	  device to a new address by itself, about two minutes after the change.</p>
+	  minutes, the device takes an address from the router instead, and goes back to the fixed one by itself
+	  once it is on that Wi-Fi again and the gateway answers. Saving the same address again tries it again
+	  at once. Home Assistant follows the device to a new address by itself, about two minutes after the
+	  change.</p>
 	 <p><button type="submit">Save</button></p></form></fieldset>`,
 		checked(!a.Fixed), checked(a.Fixed), html.EscapeString(a.CIDR()), html.EscapeString(ipString(a)), html.EscapeString(dns))
 }
@@ -86,8 +91,11 @@ func saveAddress(w http.ResponseWriter, r *http.Request) (problem string, handle
 	if r.PostFormValue("mode") == "fixed" && !a.Fixed {
 		return "a fixed address needs the address itself, like 192.168.1.50/24", false
 	}
-	if wifi.AddressUnchanged(a) {
-		return "", false // the setting in use: nothing to try, nothing moves
+	if !wifi.AddressSupported() {
+		return "this device cannot set its network address", false
+	}
+	if wifi.AddressUnchanged(r.Context(), a) {
+		return "", false // the setting in use, and in place: nothing to try, nothing moves
 	}
 	before := wifi.LoadAddress()
 	slog.Info("setup page: network address set", "address", a.String())
@@ -99,6 +107,8 @@ func saveAddress(w http.ResponseWriter, r *http.Request) (problem string, handle
 		time.Sleep(applyAfter)
 		if _, err := wifi.ChangeAddress(context.Background(), a); err != nil {
 			slog.Warn("setup page: the network address could not be applied", "err", err)
+		} else if why := wifi.AddressFallback(); why != "" {
+			slog.Warn("setup page: the network address was not kept", "address", a.String(), "reason", why)
 		}
 	})
 	switch {
